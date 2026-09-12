@@ -216,3 +216,20 @@ Tasks:
 **Do not** load the training targets, compute statistics, fit anything or make plots in this step. The point is purely to prove the format end to end.
 
 **Report back with:** the validation output, the first three rows of the zero submission, the file tree, and anything about the data that blocked you.
+
+Execute Step 1 only ("Step 1 — the only step to work on right now"), tasks 1 through 10, in order:
+
+1. Create the full folder structure specified in CLAUDE.md section "Repo layout", with .gitkeep files so empty directories survive in git.
+2. Write .gitignore covering .venv/, __pycache__/, *.pyc, .ipynb_checkpoints/, data/raw/*, data/processed/*, .DS_Store, with a negation for .gitkeep files.
+3. Create a virtual environment, install numpy pandas scipy scikit-learn matplotlib plotly jupyter lightgbm, and freeze to requirements.txt.
+4. Copy train.csv, test.csv, sample_submission.csv into data/raw/.
+5. Write src/inrange/io.py with: constants for input and target column names, load_train(), load_test(), load_sample_submission(), and validate_submission(df, test_df) that checks row count, exact column names and order, that every test track_id appears exactly once and is unaltered, and that there are no NaNs or infinities.
+6. Write make_submission.py at the repo root: reads data/raw/test.csv, calls a predict(rows) function, writes outputs/submissions/submission_baseline_zero.csv. predict() returns zeros for all nine targets. Plain standard library plus pandas only, no model.
+7. Run it, then run validate_submission against the output, and print the validation result.
+8. Also produce outputs/submissions/submission_mean.csv by copying sample_submission.csv through the same validation path.
+9. Write a first-pass README.md: one-paragraph problem statement, how to obtain the data, how to reproduce, and a results table with headers only, no rows yet.
+10. git init -b main, commit, and stop.
+
+Do not load training targets, compute statistics, fit anything, or make plots in this step — this step only proves the format end to end.
+
+When done, report back: the validation output, the first three rows of the zero submission, the file tree, and anything about the data that caused friction.
