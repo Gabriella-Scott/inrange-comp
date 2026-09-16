@@ -41,7 +41,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import LeaveOneGroupOut
 
 from inrange.features import SPEED_BAND_LABELS, session_labels, speed_band
 from inrange.io import TARGET_COLS
@@ -150,14 +150,14 @@ def compute_reference_scales(train: pd.DataFrame) -> dict[str, float]:
 Split = tuple[np.ndarray, np.ndarray]  # positional (train_idx, val_idx)
 
 
-def session_grouped_splits(sessions: pd.Series, n_splits: int = 5) -> list[Split]:
-    """GroupKFold on session id: every session is validated once, never trained on in that fold.
+def leave_one_session_out_splits(sessions: pd.Series) -> list[Split]:
+    """One fold per session: that session is validated, every other session trains.
 
-    Harder than the real test, where every test shot has same-session shots in train.
+    Harder than the real test, where every test shot has same-session shots in
+    train. Folds are ordered by session id.
     """
-    splitter = GroupKFold(n_splits=n_splits)
     placeholder = np.zeros(len(sessions))
-    return list(splitter.split(placeholder, groups=sessions.to_numpy()))
+    return list(LeaveOneGroupOut().split(placeholder, groups=sessions.to_numpy()))
 
 
 def session_holdout_fractions(train_sessions: pd.Series, test_sessions: pd.Series) -> dict[int, float]:
@@ -209,8 +209,9 @@ FitPredict = Callable[[pd.DataFrame, pd.DataFrame], pd.DataFrame]
 class CVResult:
     """Per-shot validation errors from one splitting strategy, with summaries.
 
-    ``errors`` has one row per (fold, validated shot): columns fold, session,
-    speed_band, then every component in its own units.
+    ``errors`` has one row per (fold, validated shot): columns fold, shot
+    (index label in the training frame), session, speed_band, then every
+    component in its own units.
     """
 
     strategy: str
@@ -225,6 +226,10 @@ class CVResult:
         """One summary row per fold."""
         return self.errors.groupby("fold").apply(summarise_errors, include_groups=False)
 
+    def by_session(self) -> pd.DataFrame:
+        """One summary row per session (pooled over folds or repeats)."""
+        return self.errors.groupby("session").apply(summarise_errors, include_groups=False)
+
     def by_speed_band(self) -> pd.DataFrame:
         """One summary row per ball speed band, in SPEED_BAND_LABELS order."""
         table = self.errors.groupby("speed_band").apply(summarise_errors, include_groups=False)
@@ -236,12 +241,44 @@ class CVResult:
         Corrects for train having fewer >=70 m/s shots than test. Raw mean errors
         and scaled components are reweighted the same way; n is the pooled count.
         """
-        bands = self.by_speed_band()
-        shares = pd.Series(self.test_band_shares).reindex(bands.index)
-        shares = shares / shares.sum()
-        mixed = bands.drop(columns="n").mul(shares, axis=0).sum()
-        mixed["n"] = bands["n"].sum()
-        return mixed[bands.columns]
+        return _mix_bands(self.errors, self.test_band_shares)
+
+    def test_mix_spread(self, n_boot: int = 2000, seed: int = 0) -> pd.Series:
+        """Uncertainty of the test-mix composite, estimated two ways.
+
+        fold_sd: standard deviation of the test-mix composite computed per fold
+            (or repeat), using only folds that contain every speed band.
+            Leave-one-session-out folds often lack a band, so few may qualify.
+        boot_sd, boot_p05, boot_p95: bootstrap over shots. Each shot's errors
+            are first averaged over the folds it was validated in, then shots
+            are resampled with replacement within their speed band.
+        """
+        per_fold = []
+        for _, fold_errors in self.errors.groupby("fold"):
+            if set(fold_errors["speed_band"]) >= set(SPEED_BAND_LABELS):
+                per_fold.append(_mix_bands(fold_errors, self.test_band_shares)["composite"])
+
+        per_shot = self.errors.groupby("shot").agg(
+            {"speed_band": "first", **{c: "mean" for c in COMPONENTS}})
+        rng = np.random.default_rng(seed)
+        weights = np.array([WEIGHTS[c] / REFERENCE_SCALES[c] for c in COMPONENTS])
+        shares = _band_shares(self.test_band_shares, per_shot["speed_band"])
+        boot = np.zeros(n_boot)
+        for band, share in shares.items():
+            values = per_shot.loc[per_shot["speed_band"] == band, COMPONENTS].to_numpy()
+            picks = rng.integers(0, len(values), size=(n_boot, len(values)))
+            band_means = values[picks].mean(axis=1)  # (n_boot, n_components)
+            boot += share * band_means @ weights
+
+        return pd.Series({
+            "composite": self.test_mix()["composite"],
+            "fold_sd": float(np.std(per_fold, ddof=1)) if len(per_fold) > 1 else np.nan,
+            "folds_used": float(len(per_fold)),
+            "folds_total": float(self.errors["fold"].nunique()),
+            "boot_sd": float(boot.std(ddof=1)),
+            "boot_p05": float(np.percentile(boot, 5)),
+            "boot_p95": float(np.percentile(boot, 95)),
+        })
 
     def report(self) -> pd.DataFrame:
         """Overall, test-mix and per-band rows in one table."""
@@ -272,34 +309,34 @@ def cross_validate(
         errors = per_shot_errors(val_rows[TARGET_COLS], predictions.loc[val_rows.index])
         errors.insert(0, "speed_band", bands.iloc[val_idx].to_numpy())
         errors.insert(0, "session", sessions.iloc[val_idx].to_numpy())
+        errors.insert(0, "shot", val_rows.index.to_numpy())
         errors.insert(0, "fold", fold)
         parts.append(errors)
-    return CVResult(strategy, pd.concat(parts), dict(test_band_shares))
+    return CVResult(strategy, pd.concat(parts, ignore_index=True), dict(test_band_shares))
 
 
 def evaluate(
     fit_predict: FitPredict,
     train: pd.DataFrame,
     test: pd.DataFrame,
-    n_group_splits: int = 5,
     n_repeats: int = 10,
     seed: int = 0,
 ) -> dict[str, CVResult]:
     """Cross-validate under both strategies. Always report both.
 
-    Returns {"session_grouped": ..., "within_session": ...}. ``test`` supplies
+    Returns {"leave_one_session_out": ..., "within_session": ...}. ``test`` supplies
     only inputs: session ids, per-session holdout fractions and speed band shares.
     """
     train_sessions, test_sessions = session_labels(train, test)
     test_band_shares = speed_band(test).value_counts(normalize=True).to_dict()
 
-    grouped = session_grouped_splits(train_sessions, n_group_splits)
+    grouped = leave_one_session_out_splits(train_sessions)
     fractions = session_holdout_fractions(train_sessions, test_sessions)
     within = within_session_splits(train_sessions, fractions, n_repeats, seed)
 
     return {
-        "session_grouped": cross_validate(fit_predict, train, grouped, train_sessions,
-                                          test_band_shares, "session_grouped"),
+        "leave_one_session_out": cross_validate(fit_predict, train, grouped, train_sessions,
+                                                test_band_shares, "leave_one_session_out"),
         "within_session": cross_validate(fit_predict, train, within, train_sessions,
                                          test_band_shares, "within_session"),
     }
@@ -309,3 +346,24 @@ def report_table(results: Mapping[str, CVResult]) -> pd.DataFrame:
     """Stack the report() of each strategy into one table."""
     return pd.concat([result.report() for result in results.values()])
 
+
+def test_mix_table(results: Mapping[str, CVResult]) -> pd.DataFrame:
+    """Test-mix composite and its spread (CVResult.test_mix_spread) per strategy."""
+    return pd.DataFrame({name: result.test_mix_spread() for name, result in results.items()}).T
+
+
+def _band_shares(test_band_shares: Mapping[str, float], present: pd.Series) -> pd.Series:
+    """Test shares for the bands present in ``present``, renormalised to sum to 1."""
+    bands = [b for b in SPEED_BAND_LABELS if b in set(present)]
+    shares = pd.Series(test_band_shares).reindex(bands)
+    return shares / shares.sum()
+
+
+def _mix_bands(errors: pd.DataFrame, test_band_shares: Mapping[str, float]) -> pd.Series:
+    """Per-band summaries of ``errors`` reweighted to the test band shares."""
+    bands = errors.groupby("speed_band").apply(summarise_errors, include_groups=False)
+    shares = _band_shares(test_band_shares, errors["speed_band"])
+    bands = bands.reindex(shares.index)
+    mixed = bands.drop(columns="n").mul(shares, axis=0).sum()
+    mixed["n"] = bands["n"].sum()
+    return mixed[bands.columns]

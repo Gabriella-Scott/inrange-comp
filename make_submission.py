@@ -1,10 +1,8 @@
-"""Write submission files from test.csv and validate them.
+"""Train the current model on all training rows, predict test, write validated submissions.
 
 Outputs:
-    outputs/submissions/submission_baseline_zero.csv  predict() applied to test
-    outputs/submissions/submission_mean.csv           sample_submission passed through validation
-
-The placeholder predict() returns zeros. Later steps replace it with a model.
+    outputs/submissions/submission_lgbm_baseline_<YYYY-MM-DD>.csv  LGBMBaseline predictions
+    outputs/submissions/submission_mean.csv                        training-mean fallback
 
 Usage:
     .venv/bin/python make_submission.py
@@ -12,52 +10,38 @@ Usage:
 
 from __future__ import annotations
 
-from pathlib import Path
+import datetime as dt
 
 import pandas as pd
 
 from inrange.io import (
-    ID_COL,
-    SUBMISSION_COLS,
     SUBMISSIONS_DIR,
     TARGET_COLS,
     load_sample_submission,
     load_test,
-    validate_submission,
+    load_train,
+    write_submission,
 )
+from inrange.models import LGBMBaseline
 
 
-def predict(rows: pd.DataFrame) -> pd.DataFrame:
-    """Predict the nine targets for each input row.
+def predict(train: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
+    """Predict TARGET_COLS for each input row (spin rpm, times s, positions m).
 
-    Returns a frame with one row per input row and columns TARGET_COLS
-    (spin in rpm, times in s, positions in m). Placeholder: all zeros.
+    Current model: LGBMBaseline without the session feature (see 03_modelling.ipynb).
     """
-    return pd.DataFrame(0.0, index=rows.index, columns=TARGET_COLS)
-
-
-def write_validated(df: pd.DataFrame, test: pd.DataFrame, path: Path) -> None:
-    """Validate a submission, print the result, and write it only if valid."""
-    problems = validate_submission(df, test)
-    if problems:
-        print(f"INVALID {path.name}:")
-        for problem in problems:
-            print(f"  - {problem}")
-        raise SystemExit(1)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False)
-    print(f"VALID   {path.name}: {len(df)} rows, {len(df.columns)} columns")
+    return LGBMBaseline(use_session=False).fit(train).predict(rows)
 
 
 def main() -> None:
+    train = load_train()
     test = load_test()
+    today = dt.date.today().isoformat()
 
-    predictions = predict(test)
-    zero_sub = pd.concat([test[[ID_COL]], predictions], axis=1)[SUBMISSION_COLS]
-    write_validated(zero_sub, test, SUBMISSIONS_DIR / "submission_baseline_zero.csv")
+    write_submission(predict(train, test), test, SUBMISSIONS_DIR / f"submission_lgbm_baseline_{today}.csv")
 
-    mean_sub = load_sample_submission()
-    write_validated(mean_sub, test, SUBMISSIONS_DIR / "submission_mean.csv")
+    mean_targets = load_sample_submission()[TARGET_COLS]
+    write_submission(mean_targets, test, SUBMISSIONS_DIR / "submission_mean.csv")
 
 
 if __name__ == "__main__":

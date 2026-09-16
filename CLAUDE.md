@@ -139,8 +139,22 @@ A small gradient-boosting model predicts the physics model's residuals for apex 
 
 ### Git
 
-- One commit per completed step, present-tense imperative message.
-- Every generated submission is committed to `outputs/submissions/` with a dated filename, and the commit message carries the CV score.
+**Never run git commands.** Do not run `git add`, `git commit`, `git init`,
+`git checkout`, `git restore`, or anything else that touches version control.
+Gabriella handles all git herself.
+
+At the end of each completed step, after the report, print a short block:
+
+    COMMIT
+    files: <paths added or changed in this step>
+    message: <present-tense imperative subject line, under 72 chars>
+    body: <optional, one or two lines, including the CV score if a submission was generated>
+
+Then stop. Do not carry on to the next step until told to.
+
+- One commit per completed step.
+- Every generated submission goes in `outputs/submissions/` with a dated
+  filename, and its commit message carries the CV score.
 - `data/raw/` and `data/processed/` are gitignored.
 
 ### Repo layout

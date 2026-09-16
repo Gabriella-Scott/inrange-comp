@@ -108,3 +108,18 @@ def validate_submission(df: pd.DataFrame, test_df: pd.DataFrame) -> list[str]:
         problems.append(f"{n_inf} target values are infinite")
 
     return problems
+
+
+def write_submission(predictions: pd.DataFrame, test_df: pd.DataFrame, path: Path) -> None:
+    """Validate and write a submission; print the result.
+
+    ``predictions`` holds TARGET_COLS indexed like ``test_df``. Raises
+    ValueError listing every problem, and writes nothing, if validation fails.
+    """
+    submission = pd.concat([test_df[[ID_COL]], predictions[TARGET_COLS]], axis=1)[SUBMISSION_COLS]
+    problems = validate_submission(submission, test_df)
+    if problems:
+        raise ValueError(f"invalid submission {path.name}: " + "; ".join(problems))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    submission.to_csv(path, index=False)
+    print(f"VALID   {path.name}: {len(submission)} rows, {len(submission.columns)} columns, no problems found")

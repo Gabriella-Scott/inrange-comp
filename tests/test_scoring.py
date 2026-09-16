@@ -15,7 +15,7 @@ from inrange.scoring import (
     cross_validate,
     per_shot_errors,
     score,
-    session_grouped_splits,
+    leave_one_session_out_splits,
     within_session_splits,
 )
 
@@ -87,9 +87,12 @@ def test_in_sample_mean_prediction_scores_one_on_every_component() -> None:
     assert result["composite"] == pytest.approx(1.0)
 
 
-def test_grouped_splits_never_share_a_session() -> None:
+def test_leave_one_session_out_holds_out_each_session_once() -> None:
     sessions = pd.Series(np.repeat(np.arange(11), 7))
-    splits = session_grouped_splits(sessions, n_splits=5)
+    splits = leave_one_session_out_splits(sessions)
+    assert len(splits) == 11
+    for session, (_, val_idx) in enumerate(splits):
+        assert set(sessions.iloc[val_idx]) == {session}
     validated = np.concatenate([val for _, val in splits])
     assert np.array_equal(np.sort(validated), np.arange(len(sessions)))
     for train_idx, val_idx in splits:
@@ -110,7 +113,7 @@ def test_within_session_splits_match_holdout_fractions() -> None:
 def test_cross_validate_hides_validation_targets() -> None:
     train = load_train()
     sessions = pd.Series(np.arange(len(train)) % 3, index=train.index)
-    splits = session_grouped_splits(sessions, n_splits=3)
+    splits = leave_one_session_out_splits(sessions)
 
     def fit_predict(train_rows: pd.DataFrame, val_rows: pd.DataFrame) -> pd.DataFrame:
         assert not set(TARGET_COLS) & set(val_rows.columns)
@@ -120,3 +123,7 @@ def test_cross_validate_hides_validation_targets() -> None:
     assert len(result.errors) == len(train)
     assert result.overall()["n"] == len(train)
     assert result.by_fold()["n"].sum() == len(train)
+    assert result.by_session()["n"].sum() == len(train)
+    spread = result.test_mix_spread(n_boot=200)
+    assert spread["folds_used"] == 3
+    assert spread["boot_p05"] <= spread["composite"] <= spread["boot_p95"]
