@@ -12,14 +12,11 @@ Usage:
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
-
-from inrange.io import (  # noqa: E402
+from inrange.io import (
     ID_COL,
     SUBMISSION_COLS,
     SUBMISSIONS_DIR,

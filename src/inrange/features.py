@@ -33,3 +33,33 @@ def assign_tees(df: pd.DataFrame) -> pd.Series:
     ordered = df.assign(_key=keys).sort_values("launch_x")["_key"].unique()
     labels = {key: f"T{i + 1}" for i, key in enumerate(ordered)}
     return keys.map(labels).rename("tee")
+
+
+# Ball speed bands (m/s) used to break down CV errors. Test is denser than
+# train above 70 m/s (01_eda.ipynb, section 6).
+SPEED_BAND_EDGES: list[float] = [0.0, 50.0, 70.0, np.inf]
+SPEED_BAND_LABELS: list[str] = ["<50", "50-70", ">=70"]
+
+
+def ball_speed(df: pd.DataFrame) -> pd.Series:
+    """Launch ball speed (m/s) from launch_vx, launch_vy, launch_vz (m/s)."""
+    speed = np.sqrt(df["launch_vx"] ** 2 + df["launch_vy"] ** 2 + df["launch_vz"] ** 2)
+    return speed.rename("ball_speed")
+
+
+def speed_band(df: pd.DataFrame) -> pd.Series:
+    """Ball speed band label per row: '<50', '50-70' or '>=70' (m/s)."""
+    bands = pd.cut(ball_speed(df), SPEED_BAND_EDGES, labels=SPEED_BAND_LABELS, right=False)
+    return bands.astype(str).rename("speed_band")
+
+
+def session_labels(train: pd.DataFrame, test: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Session ids for train and test rows, assigned on their combined launch times.
+
+    Returned Series keep the original indexes of ``train`` and ``test``.
+    """
+    combined = pd.concat([train["launch_time"], test["launch_time"]], ignore_index=True)
+    sessions = assign_sessions(combined)
+    train_sessions = pd.Series(sessions.iloc[: len(train)].to_numpy(), index=train.index, name="session")
+    test_sessions = pd.Series(sessions.iloc[len(train):].to_numpy(), index=test.index, name="session")
+    return train_sessions, test_sessions

@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inrange"
+version = "0.1.0"
+description = "Golf ball trajectory prediction from the first 60 m of radar tracking"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]

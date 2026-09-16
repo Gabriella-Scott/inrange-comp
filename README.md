@@ -19,12 +19,20 @@ Requires Python 3.10.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e .
+.venv/bin/python -m pytest tests
 .venv/bin/python make_submission.py
 ```
 
-Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved.
+Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
 
 ## Results
 
-| Submission | Model | CV composite | Landing pos. (m) | Apex pos. (m) | Apex t (s) | Landing t (s) | Spin (rpm) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
+The competition metric is hidden. `src/inrange/scoring.py` defines our own approximation: mean landing and apex position errors (Euclidean, m), mean apex and landing time errors (s) and mean spin error (rpm), each divided by the error of predicting the training mean, then weighted 0.40 / 0.25 / 0.125 / 0.125 / 0.10. A composite of 1.0 means no better than the training mean; lower is better.
+
+Every model is cross-validated two ways: whole practice sessions held out (session-grouped, 5 folds), and random holdouts within each session matching the real test split (within-session, 10 repeats). "Test mix" reweights the speed-band results to the test set's larger share of shots above 70 m/s. Component columns are unscaled overall means.
+
+| Model | CV strategy | Composite | Test-mix composite | Landing pos. (m) | Apex pos. (m) | Apex t (s) | Landing t (s) | Spin (rpm) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Training mean (benchmark) | session-grouped | 1.006 | 1.107 | 42.28 | 31.54 | 0.465 | 0.857 | 2089 |
+| Training mean (benchmark) | within-session | 1.017 | 1.115 | 42.83 | 31.92 | 0.473 | 0.867 | 2075 |
