@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 
+from inrange.calibration import GlobalFit, fit_globals, fit_tilts, predict_shot_frame, shot_batch
 from inrange.features import build_features
 from inrange.frame import add_shot_frame, from_shot_frame
 from inrange.io import TARGET_COLS
@@ -101,5 +105,65 @@ def lgbm_fit_predict(use_session: bool = True):
 
     def fit_predict(train_rows: pd.DataFrame, val_rows: pd.DataFrame) -> pd.DataFrame:
         return LGBMBaseline(use_session=use_session).fit(train_rows).predict(val_rows)
+
+    return fit_predict
+
+
+class OracleSpinPhysics:
+    """Physics simulator with fitted global coefficients and the TRUE launch spin.
+
+    Not a submittable model: spin magnitude is taken from the targets, so this
+    measures the ceiling of the physics approach when spin is known. Training
+    fits the globals and per-shot tilts (fit_globals). Prediction fits each
+    shot's tilt from its checkpoints only, then simulates apex and landing.
+    """
+
+    def __init__(self, fit_tau: bool = False) -> None:
+        self.fit_tau = fit_tau
+        self.fit_result: GlobalFit | None = None
+
+    def fit(self, train: pd.DataFrame) -> "OracleSpinPhysics":
+        self.fit_result = fit_globals(shot_batch(train), fit_tau=self.fit_tau)
+        return self
+
+    def predict_with_tilt(self, rows: pd.DataFrame, spin_rpm: pd.Series) -> tuple[pd.DataFrame, pd.Series]:
+        """TARGET_COLS predictions and the fitted tilts (rad) for rows, given spin (rpm)."""
+        fit = self.fit_result
+        batch = shot_batch(rows, spin_rpm=spin_rpm.loc[rows.index])
+        tilt = fit_tilts(batch, fit.aero, fit.scales)
+        shot_frame = predict_shot_frame(batch, fit.aero, tilt.to_numpy())
+        return targets_from_shot_frame(rows, shot_frame), tilt
+
+    def predict(self, rows: pd.DataFrame, spin_rpm: pd.Series) -> pd.DataFrame:
+        return self.predict_with_tilt(rows, spin_rpm)[0]
+
+
+def _fit_physics_fold(train_rows: pd.DataFrame, val_rows: pd.DataFrame, spin_rpm: pd.Series) -> dict:
+    model = OracleSpinPhysics().fit(train_rows)
+    predictions, tilt = model.predict_with_tilt(val_rows, spin_rpm)
+    return {"fit": model.fit_result, "predictions": predictions, "val_tilt": tilt}
+
+
+def physics_fold_results(train: pd.DataFrame, splits: list[tuple[np.ndarray, np.ndarray]],
+                         n_jobs: int = -1) -> list[dict]:
+    """Fit OracleSpinPhysics on every split in parallel.
+
+    Returns one dict per split with the GlobalFit ("fit"), predictions for the
+    validation rows ("predictions", TARGET_COLS) and their checkpoint-only
+    tilts ("val_tilt", rad).
+    """
+    spin = train["launch_spin_rate"]
+    return Parallel(n_jobs=n_jobs)(
+        delayed(_fit_physics_fold)(train.iloc[tr], train.iloc[va].drop(columns=TARGET_COLS), spin)
+        for tr, va in splits
+    )
+
+
+def replay_fit_predict(fold_results: list[dict]) -> Callable[[pd.DataFrame, pd.DataFrame], pd.DataFrame]:
+    """A scoring.FitPredict that returns stored predictions for each validation set."""
+    stored = {frozenset(result["predictions"].index): result["predictions"] for result in fold_results}
+
+    def fit_predict(train_rows: pd.DataFrame, val_rows: pd.DataFrame) -> pd.DataFrame:
+        return stored[frozenset(val_rows.index)].loc[val_rows.index]
 
     return fit_predict

@@ -86,7 +86,7 @@ Rationale: 491 training rows is too few for a model to learn projectile motion, 
 
 ### The physics
 
-Single ODE, integrated with `scipy.integrate.solve_ivp`:
+Single ODE, integrated with a vectorised fixed-step RK4 in `src/inrange/physics.py` (all shots at once, because fitting needs many batch simulations). A `scipy.integrate.solve_ivp` reference with event functions and tight tolerances is kept for testing; the two must agree within 1 cm and 1 ms. This supersedes the earlier instruction to integrate with `solve_ivp` directly:
 
 ```
 dv/dt = -g * z_hat - (rho * A / (2 * m)) * |v| * (C_D * v - C_L * (s_hat x v))
@@ -96,13 +96,13 @@ Constants for a golf ball:
 
 - mass `m = 0.04593` kg
 - diameter `d = 0.04267` m, so area `A = pi * d^2 / 4 ≈ 1.43e-3` m²
-- air density `rho ≈ 1.2` kg/m³ (Stellenbosch is near sea level; treat as a fittable parameter)
+- air density `rho = 1.2` kg/m³, fixed (Stellenbosch is near sea level; not fitted, see below)
 - `g = 9.81` m/s²
 - `s_hat` is the unit spin axis
 
 Coefficients depend on spin ratio `S = omega * r / |v|`. Textbook starting points are `C_D ≈ 0.21 + 0.18 * S` and `C_L ≈ 0.54 * S^0.4`, but **these must be fitted to our training data, not trusted**. Add exponential spin decay `omega(t) = omega_0 * exp(-t / tau)` with `tau` in the region of 20 to 30 seconds, also fitted.
 
-Apex and landing come from `solve_ivp` event functions: `vz = 0` for apex, `z = launch_z` on the descent for landing. Do not detect them by scanning a fixed time grid.
+Apex (`vz` changes sign) and landing (`z` back to `launch_z` on the descent) are located by interpolating inside the RK4 step (cubic Hermite on the stored states), and states at each `cp*_t` are interpolated the same way. Never snap events to the time grid. Air density is fixed at 1.2 kg/m³ and not fitted, because it trades off exactly against the coefficients.
 
 ### The inverse solve
 

@@ -37,7 +37,7 @@ squared errors.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -59,6 +59,11 @@ WEIGHTS: dict[str, float] = {
     "landing_t": 0.125,
     "spin": 0.10,
 }
+
+# Composite without the spin term (not renormalised, so it equals the full
+# composite minus its spin contribution). Used when spin is supplied as an
+# input, e.g. the oracle-spin physics model.
+WEIGHTS_WITHOUT_SPIN: dict[str, float] = {**WEIGHTS, "spin": 0.0}
 
 # Output of compute_reference_scales(load_train()); tests/test_scoring.py checks
 # the two agree. Units follow COMPONENT_UNITS.
@@ -217,22 +222,23 @@ class CVResult:
     strategy: str
     errors: pd.DataFrame
     test_band_shares: dict[str, float]
+    weights: dict[str, float] = field(default_factory=lambda: dict(WEIGHTS))
 
     def overall(self) -> pd.Series:
         """Composite and components pooled over every validated shot."""
-        return summarise_errors(self.errors)
+        return summarise_errors(self.errors, weights=self.weights)
 
     def by_fold(self) -> pd.DataFrame:
         """One summary row per fold."""
-        return self.errors.groupby("fold").apply(summarise_errors, include_groups=False)
+        return self.errors.groupby("fold").apply(summarise_errors, weights=self.weights, include_groups=False)
 
     def by_session(self) -> pd.DataFrame:
         """One summary row per session (pooled over folds or repeats)."""
-        return self.errors.groupby("session").apply(summarise_errors, include_groups=False)
+        return self.errors.groupby("session").apply(summarise_errors, weights=self.weights, include_groups=False)
 
     def by_speed_band(self) -> pd.DataFrame:
         """One summary row per ball speed band, in SPEED_BAND_LABELS order."""
-        table = self.errors.groupby("speed_band").apply(summarise_errors, include_groups=False)
+        table = self.errors.groupby("speed_band").apply(summarise_errors, weights=self.weights, include_groups=False)
         return table.reindex([b for b in SPEED_BAND_LABELS if b in table.index])
 
     def test_mix(self) -> pd.Series:
@@ -241,7 +247,7 @@ class CVResult:
         Corrects for train having fewer >=70 m/s shots than test. Raw mean errors
         and scaled components are reweighted the same way; n is the pooled count.
         """
-        return _mix_bands(self.errors, self.test_band_shares)
+        return _mix_bands(self.errors, self.test_band_shares, self.weights)
 
     def test_mix_spread(self, n_boot: int = 2000, seed: int = 0) -> pd.Series:
         """Uncertainty of the test-mix composite, estimated two ways.
@@ -256,12 +262,12 @@ class CVResult:
         per_fold = []
         for _, fold_errors in self.errors.groupby("fold"):
             if set(fold_errors["speed_band"]) >= set(SPEED_BAND_LABELS):
-                per_fold.append(_mix_bands(fold_errors, self.test_band_shares)["composite"])
+                per_fold.append(_mix_bands(fold_errors, self.test_band_shares, self.weights)["composite"])
 
         per_shot = self.errors.groupby("shot").agg(
             {"speed_band": "first", **{c: "mean" for c in COMPONENTS}})
         rng = np.random.default_rng(seed)
-        weights = np.array([WEIGHTS[c] / REFERENCE_SCALES[c] for c in COMPONENTS])
+        weights = np.array([self.weights[c] / REFERENCE_SCALES[c] for c in COMPONENTS])
         shares = _band_shares(self.test_band_shares, per_shot["speed_band"])
         boot = np.zeros(n_boot)
         for band, share in shares.items():
@@ -297,8 +303,13 @@ def cross_validate(
     sessions: pd.Series,
     test_band_shares: Mapping[str, float],
     strategy: str,
+    weights: Mapping[str, float] = WEIGHTS,
 ) -> CVResult:
-    """Run fit_predict on every split and collect per-shot validation errors."""
+    """Run fit_predict on every split and collect per-shot validation errors.
+
+    ``weights`` sets the composite used in every summary of the result, e.g.
+    WEIGHTS_WITHOUT_SPIN when spin is an input rather than a prediction.
+    """
     bands = speed_band(train)
     parts = []
     for fold, (train_idx, val_idx) in enumerate(splits):
@@ -312,7 +323,7 @@ def cross_validate(
         errors.insert(0, "shot", val_rows.index.to_numpy())
         errors.insert(0, "fold", fold)
         parts.append(errors)
-    return CVResult(strategy, pd.concat(parts, ignore_index=True), dict(test_band_shares))
+    return CVResult(strategy, pd.concat(parts, ignore_index=True), dict(test_band_shares), dict(weights))
 
 
 def evaluate(
@@ -359,11 +370,62 @@ def _band_shares(test_band_shares: Mapping[str, float], present: pd.Series) -> p
     return shares / shares.sum()
 
 
-def _mix_bands(errors: pd.DataFrame, test_band_shares: Mapping[str, float]) -> pd.Series:
+def _mix_bands(
+    errors: pd.DataFrame,
+    test_band_shares: Mapping[str, float],
+    weights: Mapping[str, float] = WEIGHTS,
+) -> pd.Series:
     """Per-band summaries of ``errors`` reweighted to the test band shares."""
-    bands = errors.groupby("speed_band").apply(summarise_errors, include_groups=False)
+    bands = errors.groupby("speed_band").apply(summarise_errors, weights=weights, include_groups=False)
     shares = _band_shares(test_band_shares, errors["speed_band"])
     bands = bands.reindex(shares.index)
     mixed = bands.drop(columns="n").mul(shares, axis=0).sum()
     mixed["n"] = bands["n"].sum()
     return mixed[bands.columns]
+
+
+def paired_comparison(scores_a: pd.Series, scores_b: pd.Series) -> pd.Series:
+    """Compare two models fold by fold on the same folds (difference = a - b).
+
+    Fold-to-fold spread is dominated by how hard each held-out session is,
+    which both models share, so the spread of the paired difference is the
+    right noise level for a model comparison, not the spread of either score.
+
+    Returns mean_diff, sd_diff (across folds), se_diff (sd / sqrt(n)),
+    t (mean / se), n_folds, and a_better (number of folds where a < b; lower
+    scores are better).
+    """
+    if not scores_a.index.equals(scores_b.index):
+        raise ValueError("scores_a and scores_b must cover the same folds in the same order")
+    diff = (scores_a - scores_b).to_numpy(dtype=float)
+    n = len(diff)
+    sd = float(diff.std(ddof=1)) if n > 1 else np.nan
+    se = sd / np.sqrt(n) if n > 1 else np.nan
+    mean = float(diff.mean())
+    return pd.Series({
+        "mean_diff": mean,
+        "sd_diff": sd,
+        "se_diff": se,
+        "t": mean / se if n > 1 and se > 0 else np.nan,
+        "n_folds": float(n),
+        "a_better": float((diff < 0).sum()),
+    })
+
+
+def compare_results(result_a: CVResult, result_b: CVResult, column: str = "composite",
+                    weights: Mapping[str, float] | None = None) -> pd.Series:
+    """paired_comparison of one per-fold summary column for two CV results.
+
+    Both results must come from the same splits. ``weights`` (optional)
+    recomputes both composites with the same weights, e.g. WEIGHTS_WITHOUT_SPIN.
+    """
+    def per_fold(result: CVResult) -> pd.Series:
+        w = result.weights if weights is None else weights
+        table = result.errors.groupby("fold").apply(summarise_errors, weights=w, include_groups=False)
+        return table[column]
+
+    folds_a = result_a.errors.groupby("fold")["shot"].apply(tuple)
+    folds_b = result_b.errors.groupby("fold")["shot"].apply(tuple)
+    if not folds_a.equals(folds_b):
+        raise ValueError("results were not produced on the same folds")
+    return paired_comparison(per_fold(result_a), per_fold(result_b))

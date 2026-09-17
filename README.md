@@ -38,3 +38,12 @@ Every model is cross-validated two ways: each practice session held out in turn 
 | Training mean (`submission_mean.csv`) | within-session | 1.017 | 1.115 (0.018) | 42.83 | 31.92 | 0.473 | 0.867 | 2075 |
 | LightGBM baseline (`submission_lgbm_baseline_2026-09-16.csv`) | leave-one-session-out | 0.185 | 0.190 (0.005) | 6.02 | 3.44 | 0.093 | 0.161 | 1051 |
 | LightGBM baseline (`submission_lgbm_baseline_2026-09-16.csv`) | within-session | 0.187 | 0.197 (0.006) | 6.51 | 3.95 | 0.096 | 0.172 | 876 |
+
+**Noise floor.** Fold-to-fold spread mostly reflects how hard each held-out session is, which every model shares, so models are compared fold by fold (`scoring.compare_results`). For two near-identical models (LightGBM with and without the session feature) the paired standard error of the composite difference is 0.002 leave-one-session-out and 0.0003 within-session, against unpaired fold standard deviations of about 0.02 and 0.005. Composite differences smaller than about 0.005 (leave-one-session-out) should be treated as noise.
+
+**Physics ceiling (step 5, not submittable).** A physics simulator with fitted global coefficients and the *true* launch spin, evaluated leave-one-session-out. Spin is an input, so the composite excludes the spin term; the LightGBM row is rescored the same way on the same folds.
+
+| Model | CV strategy | Composite without spin | Test-mix (sd) | Landing pos. (m) | Apex pos. (m) | Apex t (s) | Landing t (s) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Physics, oracle spin | leave-one-session-out | 0.167 | 0.176 (0.006) | 7.93 | 3.91 | 0.108 | 0.213 |
+| LightGBM baseline | leave-one-session-out | 0.133 | 0.141 (0.005) | 6.02 | 3.44 | 0.093 | 0.161 |

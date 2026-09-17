@@ -12,7 +12,9 @@ from inrange.scoring import (
     REFERENCE_SCALES,
     WEIGHTS,
     compute_reference_scales,
+    compare_results,
     cross_validate,
+    paired_comparison,
     per_shot_errors,
     score,
     leave_one_session_out_splits,
@@ -127,3 +129,37 @@ def test_cross_validate_hides_validation_targets() -> None:
     spread = result.test_mix_spread(n_boot=200)
     assert spread["folds_used"] == 3
     assert spread["boot_p05"] <= spread["composite"] <= spread["boot_p95"]
+
+
+def test_paired_comparison_removes_shared_fold_difficulty() -> None:
+    difficulty = pd.Series([0.1, 0.5, 0.2, 0.9, 0.3])
+    shifts = np.array([-0.01, -0.02, -0.01, -0.03, -0.01])
+    result = paired_comparison(difficulty + shifts, difficulty)
+    assert result["mean_diff"] == pytest.approx(-0.016)
+    assert result["sd_diff"] == pytest.approx(np.std(shifts, ddof=1))
+    assert result["a_better"] == 5
+    assert result["n_folds"] == 5
+    # The paired spread is far smaller than the spread of either score.
+    assert result["sd_diff"] < 0.1 * difficulty.std()
+
+
+def test_paired_comparison_rejects_different_folds() -> None:
+    with pytest.raises(ValueError):
+        paired_comparison(pd.Series([1.0, 2.0]), pd.Series([1.0, 2.0], index=[1, 2]))
+
+
+@needs_data
+def test_compare_results_on_identical_models_is_zero() -> None:
+    train = load_train()
+    sessions = pd.Series(np.arange(len(train)) % 3, index=train.index)
+    splits = leave_one_session_out_splits(sessions)
+
+    def fit_predict(train_rows: pd.DataFrame, val_rows: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame([train_rows[TARGET_COLS].mean()] * len(val_rows), index=val_rows.index)
+
+    shares = {"<50": 0.3, "50-70": 0.5, ">=70": 0.2}
+    a = cross_validate(fit_predict, train, splits, sessions, shares, "a")
+    b = cross_validate(fit_predict, train, splits, sessions, shares, "b")
+    result = compare_results(a, b)
+    assert result["mean_diff"] == 0.0
+    assert result["a_better"] == 0
