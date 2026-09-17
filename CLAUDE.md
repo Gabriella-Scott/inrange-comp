@@ -123,6 +123,12 @@ A small gradient-boosting model predicts the physics model's residuals for apex 
 - Type hints on public functions. Docstrings that state units. Units are the main source of bugs in this project.
 - Prefer explicit, readable code over clever vectorisation tricks.
 
+### Model choice
+
+- Compare models with paired per-fold differences (`scoring.compare_results`), never by unpaired scores.
+- When two variants tie within noise, prefer the one without session id. Session id adds nothing within sessions and hurts when a session is new (steps 4 and 6).
+- Nothing downstream (submission, animation) may depend on notebook caches. `make_submission.py` rebuilds every artefact it needs from raw data.
+
 ### Working style
 
 - **Step by step.** Finish and verify one step before starting the next. Do not run ahead to later steps even if they seem obvious.
@@ -171,7 +177,8 @@ inrange-trajectory/
 ├── notebooks/
 │   ├── 01_eda.ipynb
 │   ├── 02_physics.ipynb
-│   └── 03_modelling.ipynb
+│   ├── 03_modelling.ipynb
+│   └── 04_trajectory.ipynb
 ├── src/inrange/
 │   ├── __init__.py
 │   ├── io.py             # loading, column groups
@@ -179,12 +186,18 @@ inrange-trajectory/
 │   ├── physics.py        # forward simulator
 │   ├── calibration.py    # global coefficient fit, launch consistency
 │   ├── inverse.py        # per-shot spin, tilt, speed factor from checkpoints
-│   ├── hybrid.py         # physics + LightGBM variants, selection
+│   ├── hybrid.py         # physics + LightGBM variants, selection, final model
+│   ├── trajectory.py     # full path from one input row, bounce and roll
+│   ├── render.py         # Plotly 3D animation, GIF
 │   ├── features.py
 │   ├── models.py
 │   └── scoring.py        # composite metric and CV
+├── models/               # gitignored; trained final model from make_submission.py
+├── make_submission.py
+├── animate_shot.py       # CLI: one HTML animation per track_id
 ├── outputs/
 │   ├── figures/
+│   ├── animations/       # HTML gallery and the writeup GIF
 │   └── submissions/
 └── report/
     └── writeup.md

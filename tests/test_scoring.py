@@ -15,6 +15,7 @@ from inrange.scoring import (
     compare_results,
     cross_validate,
     paired_comparison,
+    paired_test_mix,
     per_shot_errors,
     score,
     leave_one_session_out_splits,
@@ -163,3 +164,27 @@ def test_compare_results_on_identical_models_is_zero() -> None:
     result = compare_results(a, b)
     assert result["mean_diff"] == 0.0
     assert result["a_better"] == 0
+
+
+@needs_data
+def test_paired_test_mix_and_band_comparison() -> None:
+    train = load_train()
+    sessions = pd.Series(np.arange(len(train)) % 3, index=train.index)
+    splits = leave_one_session_out_splits(sessions)
+
+    def mean_model(train_rows: pd.DataFrame, val_rows: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame([train_rows[TARGET_COLS].mean()] * len(val_rows), index=val_rows.index)
+
+    def worse_model(train_rows: pd.DataFrame, val_rows: pd.DataFrame) -> pd.DataFrame:
+        return mean_model(train_rows, val_rows) + 1.0
+
+    shares = {"<50": 0.3, "50-70": 0.5, ">=70": 0.2}
+    a = cross_validate(mean_model, train, splits, sessions, shares, "a")
+    b = cross_validate(worse_model, train, splits, sessions, shares, "b")
+    same = paired_test_mix(a, a, n_boot=100)
+    assert same["mean_diff"] == 0.0 and same["boot_sd"] == 0.0
+    mix = paired_test_mix(a, b, n_boot=100)
+    assert mix["mean_diff"] == pytest.approx(a.test_mix()["composite"] - b.test_mix()["composite"])
+    assert mix["folds_used"] == 3
+    band = compare_results(a, b, "composite", band=">=70")
+    assert band["n_folds"] == 3

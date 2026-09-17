@@ -1,12 +1,15 @@
-"""Train the current model on all training rows, predict test, write validated submissions.
+"""Train the final model on all training rows, predict test, and write every downstream artefact.
 
-Outputs:
-    outputs/submissions/submission_hybrid_<YYYY-MM-DD>.csv  step 6 hybrid (physics + LightGBM)
-    outputs/submissions/submission_mean.csv                training-mean fallback
+Outputs (all rebuilt from data/raw, nothing read from notebook caches):
+    outputs/submissions/submission_hybrid_b_<YYYY-MM-DD>.csv  final model predictions
+    outputs/submissions/submission_mean.csv                  training-mean fallback
+    models/final_model.joblib                                trained HybridModel (gitignored)
+    data/processed/physics_states.csv                        per-shot spin, tilt, speed factor
+    data/processed/physics_globals.json                      global coefficients and scales
 
-The hybrid takes each scored component from the variant chosen in
-notebooks/03_modelling.ipynb (section 3); see inrange.hybrid. Fitting the
-physics globals and solving every shot takes a few minutes.
+The final model is inrange.hybrid.HybridModel with FINAL_CHOICE: variant b
+(LightGBM on the physics residual) for positions and times, variant a
+(physics features) for spin. Takes about a minute.
 
 Usage:
     .venv/bin/python make_submission.py
@@ -15,12 +18,14 @@ Usage:
 from __future__ import annotations
 
 import datetime as dt
+import json
+from pathlib import Path
 
 import pandas as pd
 
-from inrange.features import add_sessions
-from inrange.hybrid import combine, physics_artefacts, variant_predictions
+from inrange.hybrid import HybridModel
 from inrange.io import (
+    REPO_ROOT,
     SUBMISSIONS_DIR,
     TARGET_COLS,
     load_sample_submission,
@@ -30,34 +35,35 @@ from inrange.io import (
 )
 from inrange.models import targets_from_shot_frame
 
-# Variant per component, from the step 6 selection rule (03_modelling.ipynb).
-CHOICE: dict[str, str] = {
-    "landing_pos": "c",
-    "apex_pos": "b",
-    "apex_t": "c",
-    "landing_t": "c",
-    "spin": "a",
-}
-
-
-def predict(train: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
-    """Predict TARGET_COLS for each input row (spin rpm, times s, positions m).
-
-    Both frames need a session column (inrange.features.add_sessions).
-    """
-    artefacts = physics_artefacts(train, rows)
-    variants = variant_predictions(train, rows, artefacts, sorted(set(CHOICE.values())))
-    return targets_from_shot_frame(rows, combine(variants, CHOICE))
+MODEL_PATH: Path = REPO_ROOT / "models" / "final_model.joblib"
+PROCESSED_DIR: Path = REPO_ROOT / "data" / "processed"
 
 
 def main() -> None:
-    train, test = add_sessions(load_train(), load_test())
+    train = load_train()
+    test = load_test()
     today = dt.date.today().isoformat()
 
-    write_submission(predict(train, test), load_test(), SUBMISSIONS_DIR / f"submission_hybrid_{today}.csv")
+    model = HybridModel().fit(train)
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    model.save(MODEL_PATH)
+    print(f"saved model to {MODEL_PATH.relative_to(REPO_ROOT)}")
 
-    mean_targets = load_sample_submission()[TARGET_COLS]
-    write_submission(mean_targets, load_test(), SUBMISSIONS_DIR / "submission_mean.csv")
+    prediction = model.predict_full(test)
+    write_submission(targets_from_shot_frame(test, prediction.targets), test,
+                     SUBMISSIONS_DIR / f"submission_hybrid_b_{today}.csv")
+
+    state_cols = ["spin", "tilt", "speed", "cp_rms", "prior"]
+    states = pd.concat([
+        model.train_states[state_cols].assign(track_id=train["track_id"], split="train"),
+        prediction.states[state_cols].assign(track_id=test["track_id"], split="test"),
+    ])[["track_id", "split"] + state_cols]
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    states.to_csv(PROCESSED_DIR / "physics_states.csv", index=False)
+    (PROCESSED_DIR / "physics_globals.json").write_text(json.dumps(model.globals_record(), indent=2))
+    print(f"saved {len(states)} per-shot states and the global coefficients to data/processed/")
+
+    write_submission(load_sample_submission()[TARGET_COLS], test, SUBMISSIONS_DIR / "submission_mean.csv")
 
 
 if __name__ == "__main__":

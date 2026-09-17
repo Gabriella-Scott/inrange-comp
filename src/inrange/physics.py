@@ -200,19 +200,21 @@ class Flight:
 
 def integrate(vel0: np.ndarray, spin_rpm: np.ndarray, tilt: np.ndarray, aero: Aero,
               dt: float = DEFAULT_DT, t_max: float = DEFAULT_T_MAX, lift: bool = True,
-              min_time: np.ndarray | float = 0.0) -> Flight:
+              min_time: np.ndarray | float = 0.0, stop_height: np.ndarray | float = 0.0) -> Flight:
     """RK4 for all shots at once from the tee (position 0).
 
     vel0: launch velocity (m/s), shape (n, 3) in the shot frame.
     spin_rpm: launch spin (rpm), shape (n,). tilt: spin axis tilt (rad), shape (n,).
-    Stops at t_max, or earlier once every shot is below launch height,
-    descending, and past min_time (s, per shot).
+    Stops at t_max, or earlier once every shot is below stop_height (m
+    relative to the tee, per shot; default launch height), descending, and
+    past min_time (s, per shot).
     """
     vel = np.array(vel0, dtype=float)
     n = vel.shape[0]
     omega0 = rpm_to_rad_s(spin_rpm)
     axis = spin_axis(tilt)
     min_time = np.broadcast_to(np.asarray(min_time, dtype=float), (n,))
+    stop_height = np.broadcast_to(np.asarray(stop_height, dtype=float), (n,))
     n_steps = int(round(t_max / dt))
 
     pos_hist = np.empty((n_steps + 1, n, 3))
@@ -237,7 +239,7 @@ def integrate(vel0: np.ndarray, spin_rpm: np.ndarray, tilt: np.ndarray, aero: Ae
         vel = vel + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
         pos_hist[i + 1], vel_hist[i + 1] = pos, vel
         if i % 25 == 24:
-            done = (pos[:, 2] < 0) & (vel[:, 2] < 0) & (min_time <= t + dt)
+            done = (pos[:, 2] < stop_height) & (vel[:, 2] < 0) & (min_time <= t + dt)
             if done.all():
                 last = i + 1
                 break

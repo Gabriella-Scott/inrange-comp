@@ -38,7 +38,7 @@ from sklearn.model_selection import KFold
 from inrange.calibration import GlobalFit, fit_globals, predict_shot_frame, shot_batch
 from inrange.features import build_features
 from inrange.inverse import InverseResult, solve_states
-from inrange.io import TARGET_COLS
+from inrange.io import CHECKPOINT_NAMES, TARGET_COLS
 from inrange.models import LGBM_PARAMS, SHOT_FRAME_TARGETS, LGBMBaseline, shot_frame_targets
 
 PHYSICS_STATE_COLS: list[str] = ["spin", "tilt", "speed", "cp_rms"]
@@ -294,3 +294,129 @@ def select_per_component(table: pd.DataFrame, within_only: tuple[str, ...] = ("c
                 best, best_diff = variant, within_diff
         choice[component] = best
     return choice, pd.DataFrame(notes).set_index(["component", "variant"])
+
+
+# ---------------------------------------------------------------------------
+# Final model
+# ---------------------------------------------------------------------------
+
+# Variant per scored component for the submitted model (step 7 carry-over):
+# b wherever step 6 selection chose c, because session id adds nothing within
+# sessions and hurts when a session is new (CLAUDE.md, "Model choice").
+FINAL_CHOICE: dict[str, str] = {
+    "landing_pos": "b",
+    "apex_pos": "b",
+    "apex_t": "b",
+    "landing_t": "b",
+    "spin": "a",
+}
+
+
+def enforce_apex_floor(targets: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
+    """Raise predicted apex height (m above the tee) to at least the highest
+    measured checkpoint height. The true apex is never below a checkpoint, and
+    in out-of-fold predictions this cuts apex height error on the affected
+    shots by about 0.5 m (03_modelling.ipynb, section 4)."""
+    from inrange.frame import add_shot_frame
+
+    cp_max = add_shot_frame(rows)[[f"{cp}_h" for cp in CHECKPOINT_NAMES]].max(axis=1)
+    out = targets.copy()
+    out["apex_h"] = np.maximum(out["apex_h"], cp_max.loc[out.index])
+    return out
+
+
+@dataclass
+class ShotPrediction:
+    """HybridModel output for a set of rows, all indexed like the rows.
+
+    targets: SHOT_FRAME_TARGETS of the final model (shot frame; m, s, rpm).
+    states: fitted spin (rpm), tilt (rad), speed factor, cp_rms (m), prior (rpm).
+    physics: SHOT_FRAME_TARGETS simulated from the states alone.
+    """
+
+    targets: pd.DataFrame
+    states: pd.DataFrame
+    physics: pd.DataFrame
+
+
+class HybridModel:
+    """The submitted model: physics inverse solve plus LightGBM, per FINAL_CHOICE.
+
+    fit(train) fits the global coefficients (with per-shot speed factors), the
+    LightGBM spin prior, solves every training shot from its checkpoints, and
+    trains only the LightGBM models the chosen variants need. predict(rows)
+    works on any input rows (no targets, no session), one or many. Predicted
+    apex height is floored at the highest measured checkpoint height.
+    """
+
+    def __init__(self, choice: Mapping[str, str] = FINAL_CHOICE) -> None:
+        if any(v not in ("a", "b") for v in choice.values()):
+            raise ValueError("HybridModel supports variants a and b (no session feature)")
+        self.choice = dict(choice)
+        self.fit_result: GlobalFit | None = None
+        self.prior_model: lgb.LGBMRegressor | None = None
+        self.prior_sd: float = float("nan")
+        self.models: dict[str, lgb.LGBMRegressor] = {}
+        self.feature_names: list[str] = []
+        self.train_states: pd.DataFrame | None = None
+        self.train_physics: pd.DataFrame | None = None
+
+    def _target_variants(self) -> dict[str, str]:
+        return {target: self.choice[component]
+                for component, targets in COMPONENT_TARGETS.items() for target in targets}
+
+    def fit(self, train: pd.DataFrame) -> "HybridModel":
+        """Fit on training rows with targets. Mirrors physics_artefacts + variant_predictions."""
+        self.fit_result = fit_globals(shot_batch(train), fit_speed=True)
+        train_prior, _, self.prior_sd = spin_prior(train, train.head(1).drop(columns=TARGET_COLS))
+        self.prior_model = _spin_model(train)
+        states, physics, _ = _solve_and_simulate(train, self.fit_result, train_prior, self.prior_sd)
+        self.train_states, self.train_physics = states, physics
+
+        features = build_features(train, use_session=False).join(physics_features(states, physics))
+        self.feature_names = list(features.columns)
+        targets = shot_frame_targets(train)
+        self.models = {}
+        for target, variant in self._target_variants().items():
+            y = targets[target] - physics[target] if variant == "b" else targets[target]
+            model = lgb.LGBMRegressor(**LGBM_PARAMS)
+            model.fit(features, y)
+            self.models[target] = model
+        return self
+
+    def predict_full(self, rows: pd.DataFrame) -> ShotPrediction:
+        """Final targets, fitted states and physics-only targets for input rows."""
+        inputs = rows.drop(columns=[c for c in TARGET_COLS if c in rows.columns])
+        base = build_features(inputs, use_session=False)
+        prior = pd.Series(self.prior_model.predict(base), index=inputs.index)
+        states, physics, _ = _solve_and_simulate(inputs, self.fit_result, prior, self.prior_sd)
+        features = base.join(physics_features(states, physics))[self.feature_names]
+        out = {}
+        for target, variant in self._target_variants().items():
+            value = self.models[target].predict(features)
+            out[target] = physics[target].to_numpy() + value if variant == "b" else value
+        targets = pd.DataFrame(out, index=inputs.index)[SHOT_FRAME_TARGETS]
+        targets = enforce_apex_floor(targets, inputs)
+        return ShotPrediction(targets, states, physics)
+
+    def predict(self, rows: pd.DataFrame) -> pd.DataFrame:
+        """TARGET_COLS in the raw frame for input rows."""
+        from inrange.models import targets_from_shot_frame
+
+        return targets_from_shot_frame(rows, self.predict_full(rows).targets)
+
+    def globals_record(self) -> dict:
+        """Global coefficients, residual scales and prior strength, JSON-ready."""
+        return {**vars(self.fit_result.aero), "prior_sd_rpm": self.prior_sd, "scales": self.fit_result.scales,
+                "choice": self.choice}
+
+    def save(self, path) -> None:
+        import joblib
+
+        joblib.dump(self, path)
+
+    @staticmethod
+    def load(path) -> "HybridModel":
+        import joblib
+
+        return joblib.load(path)

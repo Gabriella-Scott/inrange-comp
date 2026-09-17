@@ -24,7 +24,7 @@ python3 -m venv .venv
 .venv/bin/python make_submission.py
 ```
 
-Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. `make_submission.py` fits the physics model and the hybrid on all training rows, which takes a few minutes; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
+Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. `make_submission.py` rebuilds everything from `data/raw/` in about a minute: the final model (saved to `models/final_model.joblib`, gitignored), the submission, and the per-shot physics states and coefficients in `data/processed/`; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
 
 ## Results
 
@@ -40,12 +40,16 @@ Every model is cross-validated two ways: each practice session held out in turn 
 | LightGBM baseline (`submission_lgbm_baseline_2026-09-16.csv`) | within-session | 0.187 | 0.197 (0.006) | 6.51 | 3.95 | 0.096 | 0.172 | 876 |
 | Physics from inputs only (step 6) | leave-one-session-out | 0.198 | 0.205 (0.005) | 6.46 | 3.48 | 0.113 | 0.204 | 983 |
 | Physics from inputs only (step 6) | within-session | 0.191 | 0.199 (0.006) | 6.49 | 3.45 | 0.112 | 0.197 | 871 |
-| Hybrid (`submission_hybrid_2026-09-17.csv`) | leave-one-session-out | 0.170 | 0.177 (0.005) | 4.99 | 2.65 | 0.094 | 0.182 | 1008 |
-| Hybrid (`submission_hybrid_2026-09-17.csv`) | within-session | 0.152 | 0.160 (0.005) | 4.94 | 2.66 | 0.078 | 0.149 | 846 |
+| Hybrid, step 6 selection (`submission_hybrid_2026-09-17.csv`) | leave-one-session-out | 0.170 | 0.177 (0.005) | 4.99 | 2.65 | 0.094 | 0.182 | 1008 |
+| Hybrid, step 6 selection (`submission_hybrid_2026-09-17.csv`) | within-session | 0.152 | 0.160 (0.005) | 4.94 | 2.66 | 0.078 | 0.149 | 846 |
+| **Final hybrid** (`submission_hybrid_b_2026-09-17.csv`) | leave-one-session-out | 0.165 | 0.172 (0.005) | 4.99 | 2.63 | 0.086 | 0.163 | 1008 |
+| **Final hybrid** (`submission_hybrid_b_2026-09-17.csv`) | within-session | 0.152 | 0.160 (0.005) | 4.95 | 2.64 | 0.078 | 0.149 | 846 |
 
 **Noise floor.** Fold-to-fold spread mostly reflects how hard each held-out session is, which every model shares, so models are compared fold by fold (`scoring.compare_results`). For two near-identical models (LightGBM with and without the session feature) the paired standard error of the composite difference is 0.002 leave-one-session-out and 0.0003 within-session, against unpaired fold standard deviations of about 0.02 and 0.005. Composite differences smaller than about 0.005 (leave-one-session-out) should be treated as noise.
 
 **Hybrid (step 6).** Each shot's spin, spin-axis tilt and launch speed factor are fitted from its checkpoints by the physics model, with a weak prior on spin from LightGBM. The simulated flight and those states then feed LightGBM, either as extra features (spin) or as a baseline whose residual LightGBM predicts (positions and times). Components were chosen per target by paired CV, and the combined model beats the LightGBM baseline by 0.011 (standard error 0.007) leave-one-session-out and 0.035 (0.001) within sessions.
+
+**Final hybrid (step 7, the submission).** The same approach using variant b (LightGBM on the physics residual) for every position and time, and variant a (physics features) for spin. Session id was dropped because it adds nothing within sessions and hurts on new sessions. The predicted apex height is also floored at the highest measured checkpoint height. Paired against the LightGBM baseline on the full composite, the final model is better by 0.016 (standard error 0.009, 10 of 11 sessions) leave-one-session-out and 0.035 (0.001) within sessions. In the test speed mix it is better by 0.018 and 0.037 (bootstrap sd 0.005). At 70 m/s and above it gains 0.048 (0.004) within sessions, but nothing when the session is new (+0.013, standard error 0.040, 8 folds).
 
 **Physics ceiling (step 5, not submittable).** A physics simulator with fitted global coefficients and the *true* launch spin, evaluated leave-one-session-out. Spin is an input, so the composite excludes the spin term; the LightGBM row is rescored the same way on the same folds.
 
@@ -53,3 +57,32 @@ Every model is cross-validated two ways: each practice session held out in turn 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Physics, oracle spin | leave-one-session-out | 0.167 | 0.176 (0.006) | 7.93 | 3.91 | 0.108 | 0.213 |
 | LightGBM baseline | leave-one-session-out | 0.133 | 0.141 (0.005) | 6.02 | 3.44 | 0.093 | 0.161 |
+
+## Animating a shot
+
+Any shot can be drawn from its 24 input columns alone: the radar segment to the net, the predicted flight beyond it, then bounce and roll. First run `make_submission.py` once to train and save the model, then:
+
+```bash
+.venv/bin/python animate_shot.py --track-id <track_id>
+```
+
+This writes `outputs/animations/shot_<track_id>.html`, a standalone interactive 3D scene (plotly.js loads from a CDN, so an internet connection is needed to view it). The scene shows:
+
+* the four tees, with T3 on its balcony;
+* the checkpoint lines, the net at 60 m and distance markers;
+* the ball's path in three line styles, and labelled apex, landing and rest points.
+
+It has play and pause controls, a time slider, and three camera presets: behind the golfer, side-on and top-down. For training shots, a button shows the true apex and landing beside the prediction. Heights are drawn at twice their true scale.
+
+In Python:
+
+```python
+from inrange.io import load_test
+from inrange.trajectory import shot_trajectory
+
+trajectory = shot_trajectory(load_test().iloc[0])   # uses models/final_model.joblib
+trajectory.path          # t, d, l, h, height, x, y, z, phase (radar, flight, bounce, roll)
+trajectory.distances     # carry, bounce, roll, total (m)
+```
+
+The path is the physics simulation with the shot's fitted spin, spin-axis tilt and launch speed factor. It is time-warped and smoothly offset so that it passes exactly through the measured checkpoints and the submitted apex and landing. Bounce and roll follow Penner's (2002) model of a golf ball's run on turf. There is no bounce data to check that against, so those distances are illustrative only. `outputs/animations/` has a gallery of five test shots (a wedge, a mid iron, a driver, a strong curve and a balcony shot), a training shot with the truth toggle, and `trajectory_mid_iron.gif`. `notebooks/04_trajectory.ipynb` explains the method and its checks.

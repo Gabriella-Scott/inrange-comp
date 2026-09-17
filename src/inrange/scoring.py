@@ -413,15 +413,18 @@ def paired_comparison(scores_a: pd.Series, scores_b: pd.Series) -> pd.Series:
 
 
 def compare_results(result_a: CVResult, result_b: CVResult, column: str = "composite",
-                    weights: Mapping[str, float] | None = None) -> pd.Series:
+                    weights: Mapping[str, float] | None = None, band: str | None = None) -> pd.Series:
     """paired_comparison of one per-fold summary column for two CV results.
 
     Both results must come from the same splits. ``weights`` (optional)
     recomputes both composites with the same weights, e.g. WEIGHTS_WITHOUT_SPIN.
+    ``band`` (optional) restricts both to one speed band; folds without shots
+    in that band drop out of the comparison.
     """
     def per_fold(result: CVResult) -> pd.Series:
         w = result.weights if weights is None else weights
-        table = result.errors.groupby("fold").apply(summarise_errors, weights=w, include_groups=False)
+        errors = result.errors if band is None else result.errors[result.errors["speed_band"] == band]
+        table = errors.groupby("fold").apply(summarise_errors, weights=w, include_groups=False)
         return table[column]
 
     folds_a = result_a.errors.groupby("fold")["shot"].apply(tuple)
@@ -429,3 +432,51 @@ def compare_results(result_a: CVResult, result_b: CVResult, column: str = "compo
     if not folds_a.equals(folds_b):
         raise ValueError("results were not produced on the same folds")
     return paired_comparison(per_fold(result_a), per_fold(result_b))
+
+
+def paired_test_mix(result_a: CVResult, result_b: CVResult, n_boot: int = 2000, seed: int = 0) -> pd.Series:
+    """Paired difference (a - b) of the test-speed-mix composite.
+
+    fold_*: over folds that contain every speed band. boot_*: bootstrap over
+    shots, resampling the same shots for both models within each band, after
+    averaging each shot's errors over the folds it was validated in.
+    """
+    folds_a = result_a.errors.groupby("fold")["shot"].apply(tuple)
+    if not folds_a.equals(result_b.errors.groupby("fold")["shot"].apply(tuple)):
+        raise ValueError("results were not produced on the same folds")
+
+    diffs = []
+    for fold, errors_a in result_a.errors.groupby("fold"):
+        if set(errors_a["speed_band"]) >= set(SPEED_BAND_LABELS):
+            errors_b = result_b.errors[result_b.errors["fold"] == fold]
+            diffs.append(_mix_bands(errors_a, result_a.test_band_shares, result_a.weights)["composite"]
+                         - _mix_bands(errors_b, result_b.test_band_shares, result_b.weights)["composite"])
+    diffs = np.array(diffs)
+
+    def per_shot(result: CVResult) -> pd.DataFrame:
+        return result.errors.groupby("shot").agg({"speed_band": "first", **{c: "mean" for c in COMPONENTS}})
+
+    shots_a, shots_b = per_shot(result_a), per_shot(result_b).loc[per_shot(result_a).index]
+    weights_a = np.array([result_a.weights[c] / REFERENCE_SCALES[c] for c in COMPONENTS])
+    weights_b = np.array([result_b.weights[c] / REFERENCE_SCALES[c] for c in COMPONENTS])
+    shares = _band_shares(result_a.test_band_shares, shots_a["speed_band"])
+    rng = np.random.default_rng(seed)
+    boot = np.zeros(n_boot)
+    for band, share in shares.items():
+        mask = (shots_a["speed_band"] == band).to_numpy()
+        values_a = shots_a.loc[mask, COMPONENTS].to_numpy() @ weights_a
+        values_b = shots_b.loc[mask, COMPONENTS].to_numpy() @ weights_b
+        picks = rng.integers(0, mask.sum(), size=(n_boot, mask.sum()))
+        boot += share * (values_a[picks] - values_b[picks]).mean(axis=1)
+
+    point = result_a.test_mix()["composite"] - result_b.test_mix()["composite"]
+    n = len(diffs)
+    return pd.Series({
+        "mean_diff": float(point),
+        "fold_mean_diff": float(diffs.mean()) if n else np.nan,
+        "fold_se": float(diffs.std(ddof=1) / np.sqrt(n)) if n > 1 else np.nan,
+        "folds_used": float(n),
+        "boot_sd": float(boot.std(ddof=1)),
+        "boot_p05": float(np.percentile(boot, 5)),
+        "boot_p95": float(np.percentile(boot, 95)),
+    })
