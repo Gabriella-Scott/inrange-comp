@@ -4,7 +4,8 @@
 * launch_consistency: does the given launch state reach the first checkpoints
   the way physics allows?
 * fit_globals: global aerodynamic coefficients plus one spin-axis tilt per
-  shot, with spin magnitude given (oracle spin in step 5).
+  shot (and optionally one launch speed factor k per shot, initial velocity =
+  k * given launch velocity), with spin magnitude given (true spin).
 * fit_tilts: tilts only, from checkpoints only, with coefficients fixed.
 
 Residual scaling (fit_globals, fit_tilts). Residuals come in five groups per
@@ -49,6 +50,10 @@ ROBUST_THRESHOLD: float = 2.0  # soft_l1 turns linear beyond this many sigma_g
 GLOBAL_LOWER = np.array([0.01, -1.0, 0.01, 0.01, 0.5])
 GLOBAL_UPPER = np.array([1.0, 3.0, 3.0, 3.0, 500.0])
 TILT_LIMIT: float = np.radians(80.0)
+# Loose bounds on the per-shot speed factor in the global fit (the inverse
+# solve uses tighter bounds taken from the fitted distribution).
+SPEED_FACTOR_BOUNDS: tuple[float, float] = (0.7, 1.3)
+SPEED_FACTOR_START: float = 0.95
 # Spin decay time (s). Not identifiable from these flights: with the other
 # globals refitted, the fit cost changes by under 1% for tau from 10 s to
 # 200 s (02_physics.ipynb), so tau is fixed at a typical literature value.
@@ -168,19 +173,25 @@ def launch_consistency(batch: ShotBatch, checkpoints: tuple[int, ...] = (0, 1)) 
 # Residuals
 # ---------------------------------------------------------------------------
 
-def _residual_blocks(batch: ShotBatch, aero: Aero, tilt: np.ndarray, with_targets: bool) -> np.ndarray:
+def _residual_blocks(batch: ShotBatch, aero: Aero, tilt: np.ndarray, with_targets: bool,
+                     speed: np.ndarray | None = None, spin_rpm: np.ndarray | None = None) -> np.ndarray:
     """Raw residuals (simulated minus observed), shape (n, 19) or (n, 12).
+
+    speed: optional per-shot factor on the launch velocity. spin_rpm: optional
+    per-shot spin replacing batch.spin_rpm.
 
     Column order: 12 checkpoint numbers (cp1 d, l, h, ..., cp4 d, l, h), then
     apex d, l, h, apex t, landing d, l, landing t. Failed events are given a
     large finite residual.
     """
     min_time = batch.cp_t[:, -1]
-    flight = integrate(batch.vel0, batch.spin_rpm, tilt, aero, min_time=min_time)
+    vel0 = batch.vel0 if speed is None else batch.vel0 * np.asarray(speed)[:, None]
+    spin = batch.spin_rpm if spin_rpm is None else spin_rpm
+    flight = integrate(vel0, spin, tilt, aero, min_time=min_time)
     summary = summarise_flight(flight, batch.cp_t)
     cp = (summary.query_pos - batch.cp_pos).reshape(batch.n, 12)
     if not with_targets:
-        return cp
+        return np.nan_to_num(cp, nan=100.0)
     blocks = np.column_stack([
         cp,
         summary.apex_pos - batch.apex_pos,
@@ -242,7 +253,8 @@ def _grouped_soft_l1(counts: np.ndarray, threshold: float):
 
 @dataclass
 class GlobalFit:
-    """Result of fit_globals. tilt in radians, indexed like the batch."""
+    """Result of fit_globals. tilt in radians and speed (factor, or None when
+    not fitted) indexed like the batch."""
 
     aero: Aero
     tilt: pd.Series
@@ -254,39 +266,54 @@ class GlobalFit:
     status: int
     pilot_aero: Aero | None = None
     history: list[str] = field(default_factory=list)
+    speed: pd.Series | None = None
 
 
 def _run_global_least_squares(batch: ShotBatch, start_aero: Aero, start_tilt: np.ndarray,
-                              scales: dict[str, float], fit_tau: bool, max_nfev: int):
+                              scales: dict[str, float], fit_tau: bool, max_nfev: int,
+                              start_speed: np.ndarray | None = None):
+    """Global least squares. Per-shot unknowns are tilt, plus speed factor when
+    start_speed is given. Returns (aero, tilt, speed or None, result)."""
     n = batch.n
     n_glob = 5 if fit_tau else 4
+    fit_speed = start_speed is not None
+    per_shot = 2 if fit_speed else 1
     divisor, counts = _column_divisors(scales, with_targets=True)
     width = len(divisor)
     tau_fixed = start_aero.tau
 
-    def unpack(x: np.ndarray) -> tuple[Aero, np.ndarray]:
+    def unpack(x: np.ndarray) -> tuple[Aero, np.ndarray, np.ndarray | None]:
         glob = x[:n_glob]
         values = glob if fit_tau else np.append(glob, tau_fixed)
-        return Aero.from_array(values), x[n_glob:]
+        tilt = x[n_glob:n_glob + n]
+        speed = x[n_glob + n:] if fit_speed else None
+        return Aero.from_array(values), tilt, speed
 
     def residuals(x: np.ndarray) -> np.ndarray:
-        aero, tilt = unpack(x)
-        return (_residual_blocks(batch, aero, tilt, True) / divisor).ravel()
+        aero, tilt, speed = unpack(x)
+        return (_residual_blocks(batch, aero, tilt, True, speed) / divisor).ravel()
 
-    sparsity = lil_matrix((n * width, n_glob + n), dtype=int)
+    # Each shot's residuals depend on the globals and on that shot's own unknowns.
+    sparsity = lil_matrix((n * width, n_glob + per_shot * n), dtype=int)
     sparsity[:, :n_glob] = 1
     for i in range(n):
-        sparsity[i * width:(i + 1) * width, n_glob + i] = 1
+        for j in range(per_shot):
+            sparsity[i * width:(i + 1) * width, n_glob + j * n + i] = 1
 
-    x0 = np.concatenate([start_aero.as_array()[:n_glob], start_tilt])
-    lower = np.concatenate([GLOBAL_LOWER[:n_glob], np.full(n, -TILT_LIMIT)])
-    upper = np.concatenate([GLOBAL_UPPER[:n_glob], np.full(n, TILT_LIMIT)])
+    x0 = [start_aero.as_array()[:n_glob], start_tilt]
+    lower = [GLOBAL_LOWER[:n_glob], np.full(n, -TILT_LIMIT)]
+    upper = [GLOBAL_UPPER[:n_glob], np.full(n, TILT_LIMIT)]
+    if fit_speed:
+        x0.append(start_speed)
+        lower.append(np.full(n, SPEED_FACTOR_BOUNDS[0]))
+        upper.append(np.full(n, SPEED_FACTOR_BOUNDS[1]))
+    x0, lower, upper = np.concatenate(x0), np.concatenate(lower), np.concatenate(upper)
     x0 = np.clip(x0, lower + 1e-9, upper - 1e-9)
     result = least_squares(residuals, x0, jac_sparsity=sparsity, bounds=(lower, upper),
                            loss=_grouped_soft_l1(np.tile(counts, n), ROBUST_THRESHOLD),
                            x_scale="jac", max_nfev=max_nfev, method="trf")
-    aero, tilt = unpack(result.x)
-    return aero, tilt, result
+    aero, tilt, speed = unpack(result.x)
+    return aero, tilt, speed, result
 
 
 def initial_tilt(batch: ShotBatch) -> np.ndarray:
@@ -298,8 +325,9 @@ def initial_tilt(batch: ShotBatch) -> np.ndarray:
 
 
 def fit_globals(batch: ShotBatch, start: Aero = TEXTBOOK, fit_tau: bool = False,
-                max_nfev: int = 100, verbose: bool = False) -> GlobalFit:
-    """Fit global coefficients and per-shot tilts to checkpoints, apex and landing.
+                max_nfev: int = 100, verbose: bool = False, fit_speed: bool = False) -> GlobalFit:
+    """Fit global coefficients and per-shot tilts (and, if fit_speed, per-shot
+    launch speed factors) to checkpoints, apex and landing, with true spin.
 
     Two passes: a pilot fit with PILOT_SCALES, then residual scales re-measured
     from the pilot residuals and a final fit started from the pilot solution.
@@ -312,19 +340,22 @@ def fit_globals(batch: ShotBatch, start: Aero = TEXTBOOK, fit_tau: bool = False,
     tilt0 = initial_tilt(batch)
     if not fit_tau:
         start = Aero(start.cd0, start.cd1, start.cl0, start.cl1, FIXED_TAU)
-    pilot_aero, pilot_tilt, pilot = _run_global_least_squares(
-        batch, start, tilt0, PILOT_SCALES, fit_tau, max_nfev)
+    speed0 = np.full(batch.n, SPEED_FACTOR_START) if fit_speed else None
+    pilot_aero, pilot_tilt, pilot_speed, pilot = _run_global_least_squares(
+        batch, start, tilt0, PILOT_SCALES, fit_tau, max_nfev, speed0)
     history.append(f"pilot: status {pilot.status}, nfev {pilot.nfev}, {pilot_aero}")
-    raw = _residual_blocks(batch, pilot_aero, pilot_tilt, True)
+    raw = _residual_blocks(batch, pilot_aero, pilot_tilt, True, pilot_speed)
     scales = robust_group_scales(raw)
     history.append(f"scales: {scales}")
-    aero, tilt, final = _run_global_least_squares(batch, pilot_aero, pilot_tilt, scales, fit_tau, max_nfev)
+    aero, tilt, speed, final = _run_global_least_squares(
+        batch, pilot_aero, pilot_tilt, scales, fit_tau, max_nfev, pilot_speed)
     history.append(f"final: status {final.status}, nfev {final.nfev}, {aero}")
     if verbose:
         print("\n".join(history))
     return GlobalFit(aero, pd.Series(tilt, index=batch.index, name="tilt"), scales, fit_tau,
                      float(final.cost), int(pilot.nfev + final.nfev), time.perf_counter() - started,
-                     int(final.status), pilot_aero, history)
+                     int(final.status), pilot_aero, history,
+                     None if speed is None else pd.Series(speed, index=batch.index, name="speed"))
 
 
 def fit_tilts(batch: ShotBatch, aero: Aero, scales: dict[str, float], max_nfev: int = 50) -> pd.Series:
@@ -345,10 +376,13 @@ def fit_tilts(batch: ShotBatch, aero: Aero, scales: dict[str, float], max_nfev: 
     return pd.Series(result.x, index=batch.index, name="tilt")
 
 
-def predict_shot_frame(batch: ShotBatch, aero: Aero, tilt: np.ndarray) -> pd.DataFrame:
+def predict_shot_frame(batch: ShotBatch, aero: Aero, tilt: np.ndarray,
+                       speed: np.ndarray | None = None) -> pd.DataFrame:
     """Simulated apex and landing in the shot frame, as SHOT_FRAME_TARGETS
-    columns (spin is passed through from the batch)."""
-    summary = simulate(batch.vel0, batch.spin_rpm, np.asarray(tilt), aero, batch.cp_t)
+    columns (spin is passed through from the batch). speed: optional per-shot
+    factor on the launch velocity."""
+    vel0 = batch.vel0 if speed is None else batch.vel0 * np.asarray(speed)[:, None]
+    summary = simulate(vel0, batch.spin_rpm, np.asarray(tilt), aero, batch.cp_t)
     return pd.DataFrame({
         "launch_spin_rate": batch.spin_rpm,
         "apex_t": summary.apex_t,
@@ -385,8 +419,8 @@ def tau_profile(batch: ShotBatch, reference: GlobalFit, taus: list[float], n_job
 
     def one(tau: float) -> dict:
         start = Aero(reference.aero.cd0, reference.aero.cd1, reference.aero.cl0, reference.aero.cl1, tau)
-        aero, _, result = _run_global_least_squares(batch, start, reference.tilt.to_numpy(),
-                                                    reference.scales, False, 100)
+        aero, _, _, result = _run_global_least_squares(batch, start, reference.tilt.to_numpy(),
+                                                       reference.scales, False, 100)
         return {"tau": tau, "cost": float(result.cost), **vars(aero)}
 
     rows = Parallel(n_jobs=n_jobs)(delayed(one)(float(tau)) for tau in taus)

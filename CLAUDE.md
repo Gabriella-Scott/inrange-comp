@@ -177,7 +177,9 @@ inrange-trajectory/
 │   ├── io.py             # loading, column groups
 │   ├── frame.py          # rotation into downrange / lateral / up
 │   ├── physics.py        # forward simulator
-│   ├── inverse.py        # spin fitting from checkpoints
+│   ├── calibration.py    # global coefficient fit, launch consistency
+│   ├── inverse.py        # per-shot spin, tilt, speed factor from checkpoints
+│   ├── hybrid.py         # physics + LightGBM variants, selection
 │   ├── features.py
 │   ├── models.py
 │   └── scoring.py        # composite metric and CV
@@ -199,11 +201,10 @@ Each step ends with a working artefact. Do not start step N+1 until step N is ve
 3. **Scoring harness.** Composite metric approximating the hidden one, plus session-grouped cross-validation.
 4. **Pure-ML baseline.** Engineered features, gradient boosting per target, first real submission.
 5. **Physics simulator.** Forward model with fitted aerodynamic coefficients.
-6. **Inverse spin solve.** Fit spin per track, validate against known spin on train.
-7. **Hybrid residual model.** ML correction on top of physics, final predictions.
-8. **Trajectory animation.** Full flight from inputs only.
-9. **Bounce and roll.** Simple restitution and friction model.
-10. **Writeup and submission.**
+6. **Inverse solve and hybrid (planned steps 6 and 7, merged).** Refit globals with a per-shot launch speed factor, fit spin, tilt and speed factor per shot from the checkpoints only, score physics from inputs only, and test hybrid LightGBM variants against step 4 with a paired stopping rule. Per-shot fitted states are saved for the animation.
+7. **Trajectory animation.** Full flight from inputs only.
+8. **Bounce and roll.** Simple restitution and friction model.
+9. **Writeup and submission.**
 
 ---
 

@@ -24,7 +24,7 @@ python3 -m venv .venv
 .venv/bin/python make_submission.py
 ```
 
-Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
+Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. `make_submission.py` fits the physics model and the hybrid on all training rows, which takes a few minutes; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
 
 ## Results
 
@@ -38,8 +38,14 @@ Every model is cross-validated two ways: each practice session held out in turn 
 | Training mean (`submission_mean.csv`) | within-session | 1.017 | 1.115 (0.018) | 42.83 | 31.92 | 0.473 | 0.867 | 2075 |
 | LightGBM baseline (`submission_lgbm_baseline_2026-09-16.csv`) | leave-one-session-out | 0.185 | 0.190 (0.005) | 6.02 | 3.44 | 0.093 | 0.161 | 1051 |
 | LightGBM baseline (`submission_lgbm_baseline_2026-09-16.csv`) | within-session | 0.187 | 0.197 (0.006) | 6.51 | 3.95 | 0.096 | 0.172 | 876 |
+| Physics from inputs only (step 6) | leave-one-session-out | 0.198 | 0.205 (0.005) | 6.46 | 3.48 | 0.113 | 0.204 | 983 |
+| Physics from inputs only (step 6) | within-session | 0.191 | 0.199 (0.006) | 6.49 | 3.45 | 0.112 | 0.197 | 871 |
+| Hybrid (`submission_hybrid_2026-09-17.csv`) | leave-one-session-out | 0.170 | 0.177 (0.005) | 4.99 | 2.65 | 0.094 | 0.182 | 1008 |
+| Hybrid (`submission_hybrid_2026-09-17.csv`) | within-session | 0.152 | 0.160 (0.005) | 4.94 | 2.66 | 0.078 | 0.149 | 846 |
 
 **Noise floor.** Fold-to-fold spread mostly reflects how hard each held-out session is, which every model shares, so models are compared fold by fold (`scoring.compare_results`). For two near-identical models (LightGBM with and without the session feature) the paired standard error of the composite difference is 0.002 leave-one-session-out and 0.0003 within-session, against unpaired fold standard deviations of about 0.02 and 0.005. Composite differences smaller than about 0.005 (leave-one-session-out) should be treated as noise.
+
+**Hybrid (step 6).** Each shot's spin, spin-axis tilt and launch speed factor are fitted from its checkpoints by the physics model, with a weak prior on spin from LightGBM. The simulated flight and those states then feed LightGBM, either as extra features (spin) or as a baseline whose residual LightGBM predicts (positions and times). Components were chosen per target by paired CV, and the combined model beats the LightGBM baseline by 0.011 (standard error 0.007) leave-one-session-out and 0.035 (0.001) within sessions.
 
 **Physics ceiling (step 5, not submittable).** A physics simulator with fitted global coefficients and the *true* launch spin, evaluated leave-one-session-out. Spin is an input, so the composite excludes the spin term; the LightGBM row is rescored the same way on the same folds.
 
