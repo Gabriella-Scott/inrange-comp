@@ -1,5 +1,8 @@
 # Inrange Trajectory Prediction
 
+**Animations:** <!-- TODO: add the GitHub Pages URL here once Pages is enabled for /docs on main -->
+`https://<user>.github.io/<repo>/`
+
 On a compact urban driving range, the radar only sees the first 60 m of each ball flight before a net stops the ball. This project predicts the rest of the flight from that opening portion alone. The inputs are the launch position and velocity plus four checkpoint crossings at 15, 30, 45 and 60 m downrange. The outputs are launch spin rate, apex position and time, and level landing position and time. The approach is a hybrid: a physics simulator inverted for spin, with a machine learning model correcting its residuals. It was built for the Inrange Student Competition on Kaggle.
 
 ## Data
@@ -20,11 +23,20 @@ Requires Python 3.10.
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install -e .
+.venv/bin/python make_submission.py     # trains the model; the tests below need it
 .venv/bin/python -m pytest tests
-.venv/bin/python make_submission.py
 ```
 
-Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. `make_submission.py` rebuilds everything from `data/raw/` in about a minute: the final model (saved to `models/final_model.joblib`, gitignored), the submission, and the per-shot physics states and coefficients in `data/processed/`; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
+To run the notebooks, register this environment as a Jupyter kernel and name it when executing them. Two traps are worth avoiding: the default `python3` kernel launches whichever `python` is first on PATH (which may be another environment), and `python -m jupyter nbconvert` dispatches to the `jupyter-nbconvert` on PATH rather than the one in this environment. Calling `nbconvert` as a module avoids both:
+
+```bash
+.venv/bin/python -m ipykernel install --prefix .venv --name inrange
+.venv/bin/python -m nbconvert --to notebook --execute --inplace \
+    --ExecutePreprocessor.kernel_name=inrange --ExecutePreprocessor.timeout=7200 \
+    notebooks/01_eda.ipynb
+```
+
+Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. `make_submission.py` must run before `pytest`, because three trajectory tests need the trained model and skip without it. `make_submission.py` rebuilds everything from `data/raw/` in about a minute: the final model (saved to `models/final_model.joblib`, gitignored), the submission, and the per-shot physics states and coefficients in `data/processed/`; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
 
 ## Results
 
@@ -50,6 +62,17 @@ Every model is cross-validated two ways: each practice session held out in turn 
 **Hybrid (step 6).** Each shot's spin, spin-axis tilt and launch speed factor are fitted from its checkpoints by the physics model, with a weak prior on spin from LightGBM. The simulated flight and those states then feed LightGBM, either as extra features (spin) or as a baseline whose residual LightGBM predicts (positions and times). Components were chosen per target by paired CV, and the combined model beats the LightGBM baseline by 0.011 (standard error 0.007) leave-one-session-out and 0.035 (0.001) within sessions.
 
 **Final hybrid (step 7, the submission).** The same approach using variant b (LightGBM on the physics residual) for every position and time, and variant a (physics features) for spin. Session id was dropped because it adds nothing within sessions and hurts on new sessions. The predicted apex height is also floored at the highest measured checkpoint height. Paired against the LightGBM baseline on the full composite, the final model is better by 0.016 (standard error 0.009, 10 of 11 sessions) leave-one-session-out and 0.035 (0.001) within sessions. In the test speed mix it is better by 0.018 and 0.037 (bootstrap sd 0.005). At 70 m/s and above it gains 0.048 (0.004) within sessions, but nothing when the session is new (+0.013, standard error 0.040, 8 folds).
+
+**Robustness to the hidden weights.** Our weights are a guess, so the saved out-of-fold predictions (`data/processed/oof_predictions.csv`) were rescored under 1000 random weight vectors that respect the stated ordering (landing position > apex position > each time > spin), and under an alternative scaling that divides each component by the spread of that target instead of by the error of predicting the training mean. The final model beat the LightGBM baseline in every one of those 4000 rescorings.
+
+| Scaling | CV strategy | Final better | Paired difference: median (range) |
+| --- | --- | --- | --- |
+| Mean-prediction error (ours) | leave-one-session-out | 1000 / 1000 | -0.016 (-0.021 to -0.010) |
+| Mean-prediction error (ours) | within-session | 1000 / 1000 | -0.036 (-0.039 to -0.033) |
+| Target standard deviation | leave-one-session-out | 1000 / 1000 | -0.014 (-0.018 to -0.009) |
+| Target standard deviation | within-session | 1000 / 1000 | -0.032 (-0.034 to -0.028) |
+
+Differences are averages over folds of the per-fold composite, so they differ slightly from the shot-pooled numbers in the table above.
 
 **Physics ceiling (step 5, not submittable).** A physics simulator with fitted global coefficients and the *true* launch spin, evaluated leave-one-session-out. Spin is an input, so the composite excludes the spin term; the LightGBM row is rescored the same way on the same folds.
 

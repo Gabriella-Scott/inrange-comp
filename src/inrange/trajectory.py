@@ -29,7 +29,7 @@ run model, in the vertical plane of the ball's horizontal motion:
 * Restitution for the normal impact speed v_n (m/s):
   e = 0.510 - 0.0375 v_n + 0.000903 v_n^2 for v_n <= 20 m/s, else 0.120
   (p. 933, eq. 5).
-* Tangential rebound (p. 933, eqs. 2 to 4, after Daish): the ball rolls out
+* Tangential rebound (p. 933, eqs. 2 to 4, from Daish as cited there): the ball rolls out
   of the impact when the friction coefficient mu (0.40, p. 933) exceeds
   mu_c = 2 (u + r w) / (7 (1 + e) v_n); then u' = (5/7) u - (2/7) r w and
   w' = -u'/r. Otherwise it slides: u' = u - mu v_n (1 + e) and

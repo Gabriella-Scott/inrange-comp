@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inrange trajectory prediction: animated ball flights</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --card: #ffffff;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --line: #e4e3df;
+    --blue: #2a78d6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0 16px;
+    background: var(--surface);
+    color: var(--ink);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding-block: 40px 64px; }
+  h1 { font-size: 1.7rem; line-height: 1.2; margin: 0 0 8px; }
+  h2 { font-size: 1.15rem; margin: 40px 0 12px; }
+  p { margin: 0 0 16px; }
+  .lede { color: var(--ink-2); }
+  a { color: var(--blue); }
+  figure { margin: 24px 0; }
+  figure img { width: 100%; border: 1px solid var(--line); border-radius: 8px; display: block; }
+  figcaption { color: var(--ink-2); font-size: 0.9rem; margin-top: 8px; }
+  ul.shots { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+  ul.shots li { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  ul.shots a { font-weight: 600; text-decoration: none; }
+  ul.shots a:hover { text-decoration: underline; }
+  .detail { color: var(--ink-2); font-size: 0.92rem; margin-top: 4px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 16px; padding: 0; list-style: none; color: var(--ink-2); font-size: 0.92rem; }
+  .swatch { display: inline-block; width: 26px; height: 0; border-top-width: 3px; vertical-align: middle; margin-right: 6px; }
+  footer { margin-top: 48px; border-top: 1px solid var(--line); padding-top: 16px; color: var(--ink-2); font-size: 0.92rem; }
+  code { background: #f1f1ee; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Predicting a golf ball's flight from its first 60 metres</h1>
+  <p class="lede">
+    On a netted urban driving range the radar only sees the start of each shot. These animations show the rest of the
+    flight reconstructed from that opening portion alone: the ball's launch, four radar crossings at 15, 30, 45 and
+    60 m, and nothing else. A physics simulator is inverted to recover each shot's spin, spin-axis tilt and launch
+    speed, gradient boosting corrects what the physics misses, and the drawn path is stitched so that it passes exactly
+    through the measured crossings and the predicted apex and landing. Bounce and roll follow a published model of a
+    ball's run on turf. Built for the Inrange student competition, on 491 tracked shots from a range near Stellenbosch.
+  </p>
+
+  <figure>
+    <img src="trajectory_mid_iron.gif" alt="Animated side and top view of a mid iron: solid measured radar segment to the net, dashed predicted flight, dotted bounce and roll.">
+    <figcaption>A mid iron. Solid: measured by the radar to the net. Dashed: predicted flight. Dotted: bounce and roll.</figcaption>
+  </figure>
+
+  <h2>Interactive shots</h2>
+  <ul class="legend">
+    <li><span class="swatch" style="border-top: 3px solid #2a78d6"></span>measured to the net</li>
+    <li><span class="swatch" style="border-top: 3px dashed #eb6834"></span>predicted flight</li>
+    <li><span class="swatch" style="border-top: 3px dotted #1baf7a"></span>bounce and roll</li>
+  </ul>
+  <p>
+    Each page is a 3D scene you can rotate, play and scrub, with camera presets for behind the golfer, side-on and
+    top-down. The five shots below are from the held-out test set, so no target for them was ever seen.
+  </p>
+  <ul class="shots">
+    <li>
+      <a href="animations/gallery_wedge.html">Wedge</a>
+      <div class="detail">Ball speed 39.8 m/s, predicted spin 10 360 rpm. Carry 93 m, and it stops almost dead: 0.3 m of run.</div>
+    </li>
+    <li>
+      <a href="animations/gallery_mid_iron.html">Mid iron</a>
+      <div class="detail">Ball speed 57.5 m/s, predicted spin 5 570 rpm. Carry 170 m, then 21 m of bounce and roll.</div>
+    </li>
+    <li>
+      <a href="animations/gallery_driver.html">Driver</a>
+      <div class="detail">Ball speed 72.0 m/s, predicted spin 2 350 rpm. Carry 232 m and 256 m in total.</div>
+    </li>
+    <li>
+      <a href="animations/gallery_strong_curve.html">Strong curve</a>
+      <div class="detail">Ball speed 76.1 m/s, predicted spin 3 200 rpm. Carry 255 m, finishing about 80 m left of the target line.</div>
+    </li>
+    <li>
+      <a href="animations/gallery_balcony.html">Upper-tier bay</a>
+      <div class="detail">Ball speed 63.6 m/s, predicted spin 5 200 rpm. Struck from a balcony 4.1 m up, so it keeps falling after level landing: 189 m carry, 217 m in total.</div>
+    </li>
+    <li>
+      <a href="animations/train_example_with_truth.html">Training shot, with the truth</a>
+      <div class="detail">A shot whose real apex and landing are known. The button at the top right shows them beside the prediction.</div>
+    </li>
+  </ul>
+
+  <h2>How it works</h2>
+  <p>
+    Every shot's spin, spin-axis tilt and launch speed factor are fitted to its four radar crossings by a golf ball
+    flight simulator (drag, Magnus lift and spin decay), whose aerodynamic coefficients are fitted to the training
+    shots. Those states and the resulting simulated flight feed a gradient boosting model, which predicts the
+    difference between the simulation and the truth for landing, apex and their times. Against a pure machine learning
+    baseline, the combination cuts landing error from 6.5 m to 5.0 m, cross-validated on held-out sessions and shots.
+  </p>
+  <p>
+    The code, a full writeup of the analysis and every cross-validation number are in the repository.
+  </p>
+
+  <footer>
+    <p>
+      <!-- TODO: replace with the repository URL before publishing -->
+      <a href="REPO_URL_PLACEHOLDER">Source code and writeup on GitHub</a>.
+      Animations are rendered with Plotly (loaded from a CDN, so they need an internet connection).
+      Heights in the 3D scenes are drawn at twice their true scale.
+    </p>
+  </footer>
+</main>
+</body>
+</html>
