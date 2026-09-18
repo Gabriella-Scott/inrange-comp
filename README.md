@@ -39,7 +39,7 @@ To run the notebooks, register this environment as a Jupyter kernel and name it 
     notebooks/01_eda.ipynb
 ```
 
-Animations are written to `outputs/animations/`, which is gitignored: `animate_shot.py` regenerates any of them, and `docs/animations/` holds the published copies that GitHub Pages serves. Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. `make_submission.py` must run before `pytest`, because three trajectory tests need the trained model and skip without it. `make_submission.py` rebuilds everything from `data/raw/` in about a minute: the final model (saved to `models/final_model.joblib`, gitignored), the submission, and the per-shot physics states and coefficients in `data/processed/`; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
+Animations are written to `outputs/animations/`, which is gitignored: `animate_shot.py` regenerates any of them, and `docs/animations/` holds the published copies that GitHub Pages serves. Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved: `make_submission.py` writes a dated `submission_hybrid_b_<date>.csv`, and `outputs/submissions/submission.csv` is the copy attached to the Kaggle writeup (the same predictions, to within CSV rounding). `make_submission.py` must run before `pytest`, because three trajectory tests need the trained model and skip without it. `make_submission.py` rebuilds everything from `data/raw/` in about a minute: the final model (saved to `models/final_model.joblib`, gitignored), the submission, and the per-shot physics states and coefficients in `data/processed/`; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
 
 ## Results
 
@@ -57,8 +57,8 @@ Every model is cross-validated two ways: each practice session held out in turn 
 | Physics from inputs only (step 6) | within-session | 0.191 | 0.199 (0.006) | 6.49 | 3.45 | 0.112 | 0.197 | 871 |
 | Hybrid, step 6 selection (`submission_hybrid_2026-09-17.csv`) | leave-one-session-out | 0.170 | 0.177 (0.005) | 4.99 | 2.65 | 0.094 | 0.182 | 1008 |
 | Hybrid, step 6 selection (`submission_hybrid_2026-09-17.csv`) | within-session | 0.152 | 0.160 (0.005) | 4.94 | 2.66 | 0.078 | 0.149 | 846 |
-| **Final hybrid** (`submission_hybrid_b_2026-09-17.csv`) | leave-one-session-out | 0.165 | 0.172 (0.005) | 4.99 | 2.63 | 0.086 | 0.163 | 1008 |
-| **Final hybrid** (`submission_hybrid_b_2026-09-17.csv`) | within-session | 0.152 | 0.160 (0.005) | 4.95 | 2.64 | 0.078 | 0.149 | 846 |
+| **Final hybrid** (`submission.csv`) | leave-one-session-out | 0.165 | 0.172 (0.005) | 4.99 | 2.63 | 0.086 | 0.163 | 1008 |
+| **Final hybrid** (`submission.csv`) | within-session | 0.152 | 0.160 (0.005) | 4.95 | 2.64 | 0.078 | 0.149 | 846 |
 
 **Noise floor.** Fold-to-fold spread mostly reflects how hard each held-out session is, which every model shares, so models are compared fold by fold (`scoring.compare_results`). For two near-identical models (LightGBM with and without the session feature) the paired standard error of the composite difference is 0.002 leave-one-session-out and 0.0003 within-session, against unpaired fold standard deviations of about 0.02 and 0.005. Composite differences smaller than about 0.005 (leave-one-session-out) should be treated as noise.
 
@@ -111,7 +111,7 @@ trajectory.path          # t, d, l, h, height, x, y, z, phase (radar, flight, bo
 trajectory.distances     # carry, bounce, roll, total (m)
 ```
 
-The path is the physics simulation with the shot's fitted spin, spin-axis tilt and launch speed factor. It is time-warped and smoothly offset so that it passes exactly through the measured checkpoints and the submitted apex and landing. Bounce and roll follow Penner's (2002) model of a golf ball's run on turf. There is no bounce data to check that against, so those distances are illustrative only. `outputs/animations/` has a gallery of five test shots (a wedge, a mid iron, a driver, a strong curve and a balcony shot), a training shot with the truth toggle, and `trajectory_mid_iron.gif`. `notebooks/04_trajectory.ipynb` explains the method and its checks.
+The path is the physics simulation with the shot's fitted spin, spin-axis tilt and launch speed factor. It is time-warped and smoothly offset so that it passes exactly through the measured checkpoints and the submitted apex and landing. Bounce and roll follow Penner's (2002b) model of a golf ball's run on turf. There is no bounce data to check that against, so those distances are illustrative only. `docs/animations/` holds the published gallery of five test shots (a wedge, a mid iron, a driver, a strong curve and a balcony shot) and a training shot with the truth toggle, and `docs/trajectory_mid_iron.gif` is the animated still used in the writeup. `notebooks/04_trajectory.ipynb` explains the method and its checks.
 
 ## Licence
 
