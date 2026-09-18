@@ -24,13 +24,13 @@ Submissions are scored by a hidden weighted composite in which landing position 
 
 **The radar samples at 50 Hz.** Every `apex_t` falls on an even hundredth of a second and every `landing_t` on an odd one: apex is reported at a sample, landing at the midpoint of the two samples bracketing the crossing. The implied offset spreads almost evenly over ±10 ms (standard deviation 5.80 ms, against 5.77 ms for a uniform distribution), which explains the height noise above and sets a floor of about 10 ms on landing time.
 
-**Sessions, and a faster test set.** Gaps between shots are at most 41 minutes within a day and at least 21.7 hours between days, giving 11 practice sessions, one per calendar day, each on a single tee. Every session is split between train and test, 38% to 62% held out, so the real split is random within sessions rather than by session. It is not even in one respect: shots of 70 m/s and above are 19.5% of the test set but 7.5% of training (109 against 37 shots, p = 0.001). Those are the hardest shots, so results below are also reweighted to the test set's speed mix.
+**Sessions, and a faster test set.** Gaps between shots are at most 41 minutes within a day and at least 21.7 hours between days, giving 11 practice sessions, one per calendar day, each on a single tee. Every session is split between train and test, 38% to 62% held out, so the real split is random within sessions rather than by session. It is not even in one respect: shots of 70 m/s and above are 19.5% of the test set but 7.5% of training (109 against 37 shots), and a two-sample Kolmogorov-Smirnov test separates the two ball speed distributions at p = 0.001. Those are the hardest shots, so results below are also reweighted to the test set's speed mix.
 
 ![Train and test input distributions](../outputs/figures/fig07_train_test_inputs.png)
 
 ## 3. Approach
 
-With 491 training rows, a model cannot learn projectile motion, drag and the Magnus effect from scratch, and a tree ensemble cannot extrapolate past the shots it has seen. Physics supplies both. The first 60 m also encodes spin implicitly, because backspin flattens the early rise, so a simulator can be inverted for the spin the radar never measures. The final model is a hybrid: physics recovers each shot's state, and gradient boosting corrects what the physics gets wrong.
+With 491 training rows, a model cannot learn projectile motion, drag and the Magnus effect from scratch, and a tree ensemble cannot extrapolate past the shots it has seen. Physics supplies both. The working hypothesis was that the first 60 m also encodes spin implicitly, because backspin flattens the early rise, so a simulator could be inverted for the spin the radar never measures. It holds only weakly: as the inverse solve below shows, spin is poorly constrained by the checkpoints alone, because spin and launch speed trade off against each other over so short an arc, and a prior is needed to pin it down. The final model is a hybrid: physics recovers each shot's state, and gradient boosting corrects what the physics gets wrong.
 
 **The simulator.** A ball flies under gravity, drag and Magnus lift, with coefficients depending on the spin ratio S and spin decaying exponentially. Fitting needs thousands of simulations, so `src/inrange/physics.py` integrates every shot at once with a fixed-step RK4 at 0.02 s, locating apex, landing and checkpoint crossings by cubic Hermite interpolation inside a step rather than snapping to the grid. Against a `solve_ivp` reference at tolerance 1e-11 it agrees to better than 0.001 mm and 0.001 ms. Spin decay time is not identifiable from flights of a few seconds, since refitting everything else changes the cost by under 1% between 10 s and 200 s, so it is fixed at 25 s.
 
@@ -62,12 +62,14 @@ Composites first (lower is better), then the unscaled position errors as leave-o
 | --- | --- | --- | --- | --- |
 | Training mean | 1.016 | 1.017 | 42.5 / 42.8 | 31.9 / 31.9 |
 | LightGBM only | 0.185 | 0.187 | 6.02 / 6.51 | 3.44 / 3.95 |
-| Physics from inputs only | 0.198 | 0.191 | 6.46 / 6.49 | 3.48 / 3.45 |
+| Physics from inputs only* | 0.198 | 0.191 | 6.46 / 6.49 | 3.48 / 3.45 |
 | **Hybrid (submitted)** | **0.165** | **0.152** | 4.99 / 4.95 | 2.63 / 2.64 |
+
+\* Physics from inputs only is not an independent alternative to the baseline. Its inverse solve pulls spin towards LightGBM's prediction, as section 3 describes, so that row shares information with the LightGBM row above it and is reported as a diagnostic rather than as a rival model.
 
 Reweighted to the test speed mix the submitted model scores 0.172 and 0.160, with a landing error of 5.0 m against 6.0 m for gradient boosting alone.
 
-Comparisons are made fold by fold, because fold-to-fold spread mostly reflects how hard each held-out session is and both models share that. Paired against the baseline, the hybrid is better by **0.016 (standard error 0.009)** with sessions held out, winning in 10 of 11, and by **0.035 (0.001)** within sessions, winning in all 10 repeats. For two near-identical models the paired standard error is 0.002 and 0.0003, so differences below about 0.005 are noise and I claim none. By speed band the within-session gains are 0.042, 0.029 and 0.048 for slow, mid and fast shots; with sessions held out the slow and mid bands gain 0.023 and 0.016, but the fast band does not (+0.013, standard error 0.040, on 37 shots and 8 usable folds).
+Comparisons are made fold by fold, because fold-to-fold spread mostly reflects how hard each held-out session is and both models share that. Paired against the baseline, the hybrid is better by **0.016 (standard error 0.009)** with sessions held out, winning in 10 of 11, and by **0.035 (0.001)** within sessions, winning in all 10 repeats. Those paired differences are averages over the per-fold composites, so they do not match the difference between the pooled numbers in the table above, which weight every shot equally. For two near-identical models the paired standard error is 0.002 and 0.0003, so differences below about 0.005 are noise and I claim none. By speed band the within-session gains are 0.042, 0.029 and 0.048 for slow, mid and fast shots; with sessions held out the slow and mid bands gain 0.023 and 0.016, but the fast band does not (+0.013, standard error 0.040, on 37 shots and 8 usable folds).
 
 ![Hybrid variants against the baseline](../outputs/figures/fig15_hybrid_paired.png)
 
@@ -85,7 +87,7 @@ Interactive versions of five test shots, plus one training shot with its truth t
 
 A trajectory is built from the 24 input columns alone. The model solves the shot's spin, tilt and speed factor from its checkpoints and predicts apex and landing. The physics path for those states is then bent twice so it agrees with everything known: a piecewise-linear time warp maps the simulated checkpoint, apex and landing times onto the observed and predicted ones, and a smooth offset curve per coordinate carries the path through the measured checkpoints and the submitted apex and landing. The result meets all six anchor points to within 1e-14 (metres, and milliseconds in time), peaks at the submitted apex, and stays above ground until it lands.
 
-Corrections are small near the radar and grow where nothing was measured: medians of 0.01 to 0.05 m laterally and 0.22 to 0.51 m in height at the checkpoints, 1.18 m at the apex and 2.93 m at landing. Three cases need care: 92 shots reach their apex before the net, 16 need the apex anchor moved to keep the time mapping increasing, and 105 have their height capped at the submitted apex by a median 0.02 m. All 1050 shots are drawn in 21.6 s.
+Corrections are small near the radar and grow where nothing was measured: medians of 0.01 to 0.05 m laterally and 0.22 to 0.51 m in height at the checkpoints, 1.18 m downrange at the apex and 2.93 m downrange at landing. Three cases need care: 92 shots reach their apex before the net, 16 need the apex anchor moved to keep the time mapping increasing, and 105 have their height capped at the submitted apex by a median 0.02 m. All 1050 shots are drawn in 21.6 s.
 
 ![Five test shots drawn from their inputs](../outputs/figures/fig16_trajectory_gallery.png)
 
@@ -101,7 +103,26 @@ The dominant uncertainty is the turf-compliance angle, which Penner fitted to a 
 
 Fast shots remain the weak point: at 70 m/s and above the hybrid gains nothing when the session is unseen, and only 37 training shots sit in that band. Six of the 11 sessions show a mean downrange bias more than three standard errors from zero, from −5.7 m to +8.5 m, consistent with wind but confounded with player and clubs on a one-session-per-day design, so per-session wind is the obvious next model. The variant per component was selected on the same cross-validation that reports the gains, so the quoted improvement is slightly optimistic, though the within-session margin is far above the noise floor. The apex floor is a physical constraint rather than a tuned choice and only moved impossible predictions; a fuller version would also keep the predicted apex time consistent with a ball still climbing at the net.
 
-## 8. Reproducibility
+## 8. Use of AI
+
+This entry was built with Anthropic's Claude: Claude Code for the
+implementation, and Claude in a chat interface for planning and review between
+steps. The working brief, conventions and step plan are in `CLAUDE.md` in the
+repository, and the commit history follows those steps.
+
+I directed the work throughout. I set the approach, the step boundaries and the
+rules for deciding whether a change was kept, reviewed each step's output before
+the next began, and made the judgement calls: dropping the session feature,
+choosing the residual variant without it over the one with it, accepting the
+apex-height constraint, and stopping the physics line of work when it lost to
+the baseline.
+
+Two rules kept the numbers honest. Nothing was reported unless it had been
+computed and printed from the data, and every number in this writeup traces to
+a file in the repository. A clean clone reproduces the submission exactly
+(section 9).
+
+## 9. Reproducibility
 
 Everything is rebuilt from the raw CSVs. A clean clone with a fresh environment and no caches passed all 32 tests, and `make_submission.py` reproduced the submitted predictions exactly, with a maximum absolute difference of 0.0 in every column. The four notebooks then ran in 8.0 s, 26 min 42 s, 3 min 35 s and 1 min 7 s, rebuilding every cache, figure and animation. One trap is worth repeating: `nbconvert` runs a kernel that launches whichever `python` is first on PATH, and `python -m jupyter nbconvert` dispatches to the `jupyter-nbconvert` on PATH, so a notebook can silently run in a different environment. The README pins both.
 

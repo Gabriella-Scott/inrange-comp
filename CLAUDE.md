@@ -169,7 +169,6 @@ Then stop. Do not carry on to the next step until told to.
 inrange-comp/
 ├── CLAUDE.md
 ├── README.md
-├── LICENSE
 ├── pyproject.toml
 ├── requirements.txt
 ├── .gitignore

@@ -4,6 +4,8 @@
 
 On a compact urban driving range, the radar only sees the first 60 m of each ball flight before a net stops the ball. This project predicts the rest of the flight from that opening portion alone. The inputs are the launch position and velocity plus four checkpoint crossings at 15, 30, 45 and 60 m downrange. The outputs are launch spin rate, apex position and time, and level landing position and time. The approach is a hybrid: a physics simulator inverted for spin, with a machine learning model correcting its residuals. It was built for the Inrange Student Competition on Kaggle.
 
+This entry was built with Anthropic's Claude, using Claude Code for the implementation and Claude in a chat interface for planning and review between steps, under my direction: I set the approach and the step boundaries, reviewed each step before the next began, and made the modelling decisions. The working brief and conventions it followed are in [CLAUDE.md](CLAUDE.md), every number reported here was computed and printed from the data, and `report/writeup.md` section 8 says the same at greater length.
+
 ## The task
 
 Inrange installs radars at driving ranges to track every ball hit. On compact urban ranges a net stops the ball after about 60 m, so the rest of the flight has to be modelled rather than measured. This entry to the [Inrange student competition](https://www.kaggle.com/competitions/inrange-competition) predicts, from the launch conditions and four checkpoint crossings alone, the launch spin rate, the apex position and time, and the level landing position and time, and then draws the whole flight as an animation. The training data is 491 shots recorded near Stellenbosch by a full-flight radar with an in-bay launch monitor; the 559 test shots are scored on the hidden targets.
@@ -112,7 +114,3 @@ trajectory.distances     # carry, bounce, roll, total (m)
 ```
 
 The path is the physics simulation with the shot's fitted spin, spin-axis tilt and launch speed factor. It is time-warped and smoothly offset so that it passes exactly through the measured checkpoints and the submitted apex and landing. Bounce and roll follow Penner's (2002b) model of a golf ball's run on turf. There is no bounce data to check that against, so those distances are illustrative only. `docs/animations/` holds the published gallery of five test shots (a wedge, a mid iron, a driver, a strong curve and a balcony shot) and a training shot with the truth toggle, and `docs/trajectory_mid_iron.gif` is the animated still used in the writeup. `notebooks/04_trajectory.ipynb` explains the method and its checks.
-
-## Licence
-
-The code in this repository is released under the MIT licence (see `LICENSE`). The licence covers the code only. The competition data is not included, not redistributed and not covered by it.
