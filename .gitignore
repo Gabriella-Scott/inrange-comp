@@ -10,3 +10,7 @@ data/processed/*
 *.egg-info/
 .pytest_cache/
 models/
+# competition text, not ours to redistribute
+SPEC.md
+# regenerate with animate_shot.py; docs/animations is the published copy
+outputs/animations/

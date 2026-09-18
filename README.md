@@ -1,13 +1,16 @@
 # Inrange Trajectory Prediction
 
-**Animations:** <!-- TODO: add the GitHub Pages URL here once Pages is enabled for /docs on main -->
-`https://<user>.github.io/<repo>/`
+**Animations:** https://gabriella-scott.github.io/inrange-comp/ (GitHub Pages, served from `/docs` on `main`)
 
 On a compact urban driving range, the radar only sees the first 60 m of each ball flight before a net stops the ball. This project predicts the rest of the flight from that opening portion alone. The inputs are the launch position and velocity plus four checkpoint crossings at 15, 30, 45 and 60 m downrange. The outputs are launch spin rate, apex position and time, and level landing position and time. The approach is a hybrid: a physics simulator inverted for spin, with a machine learning model correcting its residuals. It was built for the Inrange Student Competition on Kaggle.
 
+## The task
+
+Inrange installs radars at driving ranges to track every ball hit. On compact urban ranges a net stops the ball after about 60 m, so the rest of the flight has to be modelled rather than measured. This entry to the [Inrange student competition](https://www.kaggle.com/competitions/inrange-competition) predicts, from the launch conditions and four checkpoint crossings alone, the launch spin rate, the apex position and time, and the level landing position and time, and then draws the whole flight as an animation. The training data is 491 shots recorded near Stellenbosch by a full-flight radar with an in-bay launch monitor; the 559 test shots are scored on the hidden targets.
+
 ## Data
 
-The data is not included in this repository. Download `train.csv`, `test.csv` and `sample_submission.csv` from the competition's Data tab on Kaggle and place them in `data/raw/`:
+The competition data is not included in this repository and is not redistributed here. Download `train.csv`, `test.csv` and `sample_submission.csv` from the competition's Data tab on Kaggle and place them in `data/raw/`:
 
 ```
 data/raw/train.csv
@@ -36,7 +39,7 @@ To run the notebooks, register this environment as a Jupyter kernel and name it 
     notebooks/01_eda.ipynb
 ```
 
-Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. `make_submission.py` must run before `pytest`, because three trajectory tests need the trained model and skip without it. `make_submission.py` rebuilds everything from `data/raw/` in about a minute: the final model (saved to `models/final_model.joblib`, gitignored), the submission, and the per-shot physics states and coefficients in `data/processed/`; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
+Animations are written to `outputs/animations/`, which is gitignored: `animate_shot.py` regenerates any of them, and `docs/animations/` holds the published copies that GitHub Pages serves. Submissions are written to `outputs/submissions/` and validated against `test.csv` before they are saved. `make_submission.py` must run before `pytest`, because three trajectory tests need the trained model and skip without it. `make_submission.py` rebuilds everything from `data/raw/` in about a minute: the final model (saved to `models/final_model.joblib`, gitignored), the submission, and the per-shot physics states and coefficients in `data/processed/`; the notebooks cache their longer cross-validation fits in `data/processed/` and recompute them if the cache is missing (about 20 minutes on 8 cores). Notebooks in `notebooks/` import the `inrange` package installed by `pip install -e .`.
 
 ## Results
 
@@ -109,3 +112,7 @@ trajectory.distances     # carry, bounce, roll, total (m)
 ```
 
 The path is the physics simulation with the shot's fitted spin, spin-axis tilt and launch speed factor. It is time-warped and smoothly offset so that it passes exactly through the measured checkpoints and the submitted apex and landing. Bounce and roll follow Penner's (2002) model of a golf ball's run on turf. There is no bounce data to check that against, so those distances are illustrative only. `outputs/animations/` has a gallery of five test shots (a wedge, a mid iron, a driver, a strong curve and a balcony shot), a training shot with the truth toggle, and `trajectory_mid_iron.gif`. `notebooks/04_trajectory.ipynb` explains the method and its checks.
+
+## Licence
+
+The code in this repository is released under the MIT licence (see `LICENSE`). The licence covers the code only. The competition data is not included, not redistributed and not covered by it.

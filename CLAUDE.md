@@ -6,7 +6,7 @@ Context and working rules for Claude Code on this repo. Read this fully before a
 
 ## 1. What this project is
 
-A Kaggle private community hackathon run by **Inrange**, a golf radar and range-technology company based in Stellenbosch. Entry is part of a graduate software developer application, so code quality and the written explanation matter as much as the score.
+A Kaggle private community hackathon run by **Inrange**, a golf radar and range-technology company based in Stellenbosch.
 
 **Deadline: 19 September 2026, 17:00 GMT+2.**
 
